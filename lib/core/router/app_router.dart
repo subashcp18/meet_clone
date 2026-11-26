@@ -2,9 +2,15 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
+import '../../features/auth/presentation/screens/login_screen.dart';
+import '../../features/auth/presentation/screens/splash_screen.dart';
 import '../../features/auth/providers/auth_provider.dart';
-import '../constants/app_constants.dart';
-import '../theme/app_theme.dart';
+import '../../features/home/presentation/screens/home_screen.dart';
+import '../../features/home/presentation/screens/join_with_code_screen.dart';
+import '../../features/meeting/presentation/in_call/in_call_screen.dart';
+import '../../features/meeting/presentation/lobby/lobby_screen.dart';
+import '../../features/schedule/presentation/screens/schedule_meeting_screen.dart';
+import '../../features/settings/presentation/screens/settings_screen.dart';
 import 'route_names.dart';
 
 class _RouterRefreshNotifier extends ChangeNotifier {
@@ -59,41 +65,34 @@ final appRouterProvider = Provider<GoRouter>((ref) {
       GoRoute(
         path: RouteNames.splashPath,
         name: RouteNames.splash,
-        builder: (context, state) => const _RoutePlaceholderScreen(
-          title: AppConstants.appName,
-          subtitle: 'Splash',
-        ),
+        builder: (context, state) => const SplashScreen(),
       ),
       GoRoute(
         path: RouteNames.loginPath,
         name: RouteNames.login,
-        builder: (context, state) => const _RoutePlaceholderScreen(
-          title: 'Sign in',
-        ),
+        builder: (context, state) => const LoginScreen(),
       ),
       GoRoute(
         path: RouteNames.homePath,
         name: RouteNames.home,
-        builder: (context, state) => const _RoutePlaceholderScreen(
-          title: 'Home',
-        ),
+        builder: (context, state) => const HomeScreen(),
+      ),
+      GoRoute(
+        path: RouteNames.joinPath,
+        name: RouteNames.join,
+        builder: (context, state) => const JoinWithCodeScreen(),
       ),
       GoRoute(
         path: RouteNames.schedulePath,
         name: RouteNames.schedule,
-        builder: (context, state) => const _RoutePlaceholderScreen(
-          title: 'Schedule meeting',
-        ),
+        builder: (context, state) => const ScheduleMeetingScreen(),
       ),
       GoRoute(
         path: RouteNames.lobbyPath,
         name: RouteNames.lobby,
         builder: (context, state) {
           final code = state.pathParameters['code'] ?? '';
-          return _RoutePlaceholderScreen(
-            title: 'Lobby',
-            subtitle: code,
-          );
+          return LobbyScreen(code: code);
         },
       ),
       GoRoute(
@@ -101,43 +100,15 @@ final appRouterProvider = Provider<GoRouter>((ref) {
         name: RouteNames.meeting,
         builder: (context, state) {
           final code = state.pathParameters['code'] ?? '';
-          return Theme(
-            data: AppTheme.callTheme,
-            child: _RoutePlaceholderScreen(
-              title: 'Meeting',
-              subtitle: code,
-            ),
-          );
+          return InCallScreen(code: code);
         },
       ),
       GoRoute(
         path: RouteNames.settingsPath,
         name: RouteNames.settings,
-        builder: (context, state) => const _RoutePlaceholderScreen(
-          title: 'Settings',
-        ),
+        builder: (context, state) => const SettingsScreen(),
       ),
     ],
     // endregion
   );
 });
-
-class _RoutePlaceholderScreen extends StatelessWidget {
-  const _RoutePlaceholderScreen({
-    required this.title,
-    this.subtitle,
-  });
-
-  final String title;
-  final String? subtitle;
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(title: Text(title)),
-      body: Center(
-        child: Text(subtitle ?? title),
-      ),
-    );
-  }
-}
