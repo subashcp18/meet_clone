@@ -7,8 +7,8 @@ import '../../../../core/router/route_names.dart';
 import '../../../../core/utils/extensions.dart';
 import '../../../../core/widgets/app_error_banner.dart';
 import '../../../../core/widgets/app_sheet_action_tile.dart';
-import '../../data/models/meeting_summary.dart';
-import '../../data/repositories/home_repository.dart';
+import '../../../meeting/data/models/meeting.dart';
+import '../../../meeting/data/repositories/meeting_repository.dart';
 
 enum _PendingAction { instant, link }
 
@@ -30,7 +30,7 @@ class NewMeetingSheet extends ConsumerStatefulWidget {
 class _NewMeetingSheetState extends ConsumerState<NewMeetingSheet> {
   // region: STATE
   _PendingAction? _pendingAction;
-  MeetingSummary? _generatedMeeting;
+  Meeting? _generatedMeeting;
   String? _errorMessage;
   bool _copied = false;
   // endregion
@@ -43,7 +43,9 @@ class _NewMeetingSheetState extends ConsumerState<NewMeetingSheet> {
       _copied = false;
     });
 
-    final result = await ref.read(homeRepositoryProvider).createInstantMeeting();
+    final result = await ref
+        .read(meetingRepositoryProvider)
+        .createInstantMeeting();
     if (!mounted) {
       return;
     }
@@ -60,6 +62,9 @@ class _NewMeetingSheetState extends ConsumerState<NewMeetingSheet> {
           _pendingAction = null;
           _errorMessage = exception.message;
         });
+        ScaffoldMessenger.of(context)
+          ..hideCurrentSnackBar()
+          ..showSnackBar(SnackBar(content: Text(exception.message)));
       },
     );
   }
@@ -70,7 +75,9 @@ class _NewMeetingSheetState extends ConsumerState<NewMeetingSheet> {
       _errorMessage = null;
     });
 
-    final result = await ref.read(homeRepositoryProvider).createInstantMeeting();
+    final result = await ref
+        .read(meetingRepositoryProvider)
+        .createInstantMeeting();
     if (!mounted) {
       return;
     }
@@ -86,6 +93,9 @@ class _NewMeetingSheetState extends ConsumerState<NewMeetingSheet> {
           _pendingAction = null;
           _errorMessage = exception.message;
         });
+        ScaffoldMessenger.of(context)
+          ..hideCurrentSnackBar()
+          ..showSnackBar(SnackBar(content: Text(exception.message)));
       },
     );
   }
@@ -192,7 +202,7 @@ class _GeneratedLinkView extends StatelessWidget {
     required this.onBack,
   });
 
-  final MeetingSummary meeting;
+  final Meeting meeting;
   final bool copied;
   final VoidCallback onCopy;
   final VoidCallback onJoin;

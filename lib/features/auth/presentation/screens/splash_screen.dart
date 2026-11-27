@@ -1,56 +1,18 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../../../core/network/api_exception.dart';
 import '../../../../core/utils/extensions.dart';
 import '../../../../core/widgets/app_brand_mark.dart';
 import '../../../../core/widgets/app_loading_indicator.dart';
 import '../../providers/auth_provider.dart';
 
-class SplashScreen extends ConsumerStatefulWidget {
+class SplashScreen extends ConsumerWidget {
   const SplashScreen({super.key});
 
   @override
-  ConsumerState<SplashScreen> createState() => _SplashScreenState();
-}
-
-class _SplashScreenState extends ConsumerState<SplashScreen> {
-  // region: STATE
-  bool _hasError = false;
-  // endregion
-
-  // region: LIFECYCLE
-  @override
-  void initState() {
-    super.initState();
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      _initializeSession();
-    });
-  }
-  // endregion
-
-  // region: ACTIONS
-  Future<void> _initializeSession() async {
-    if (_hasError) {
-      setState(() => _hasError = false);
-    }
-    try {
-      await Future<void>.delayed(const Duration(milliseconds: 600));
-      if (!mounted) {
-        return;
-      }
-      await ref.read(authProvider.notifier).checkSession();
-    } catch (_) {
-      if (!mounted) {
-        return;
-      }
-      setState(() => _hasError = true);
-    }
-  }
-  // endregion
-
-  // region: BUILD
-  @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
+    final authAsync = ref.watch(authControllerProvider);
     final colors = context.colors;
     final textStyles = context.textStyles;
 
@@ -64,19 +26,22 @@ class _SplashScreenState extends ConsumerState<SplashScreen> {
               child: AppBrandMark(iconSize: 80),
             ),
             const SizedBox(height: 32),
-            if (_hasError)
+            if (authAsync.hasError)
               Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
                   Text(
-                    'Unable to restore your session',
+                    ApiException.friendlyMessage(authAsync.error!),
                     style: textStyles.bodyMedium.copyWith(
                       color: colors.onSurfaceVariant,
                     ),
+                    textAlign: TextAlign.center,
                   ),
                   const SizedBox(height: 12),
                   OutlinedButton(
-                    onPressed: _initializeSession,
+                    onPressed: () => ref
+                        .read(authControllerProvider.notifier)
+                        .retrySessionRestore(),
                     child: const Text('Retry'),
                   ),
                 ],
@@ -96,5 +61,4 @@ class _SplashScreenState extends ConsumerState<SplashScreen> {
       ),
     );
   }
-  // endregion
 }

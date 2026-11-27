@@ -2,7 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../../core/constants/app_constants.dart';
-import '../../../../core/network/dio_client.dart';
+import '../../../../core/network/supabase_provider.dart';
 import '../../../../core/theme/theme_provider.dart';
 import '../../../../core/utils/extensions.dart';
 import '../../../../core/widgets/app_user_avatar.dart';
@@ -36,7 +36,7 @@ class SettingsScreen extends ConsumerWidget {
     );
 
     if (confirmed == true) {
-      await ref.read(authProvider.notifier).signOut();
+      await ref.read(authControllerProvider.notifier).signOut();
     }
   }
   // endregion
@@ -46,11 +46,12 @@ class SettingsScreen extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final themeMode = ref.watch(themeModeProvider);
     final settings = ref.watch(settingsProvider);
-    final authState = ref.watch(authProvider);
+    final authAsync = ref.watch(authControllerProvider);
     final useMockApi = ref.watch(useMockApiProvider);
     final colors = context.colors;
     final textStyles = context.textStyles;
-    final email = authState.email ?? 'user@example.com';
+    final user = authAsync.asData?.value;
+    final email = user?.email ?? user?.displayName ?? 'user@example.com';
 
     return Scaffold(
       appBar: AppBar(
@@ -90,7 +91,7 @@ class SettingsScreen extends ConsumerWidget {
                     ),
                     const SizedBox(width: 12),
                     OutlinedButton(
-                      onPressed: authState.isBusy
+                      onPressed: authAsync.isLoading
                           ? null
                           : () => _confirmSignOut(context, ref),
                       child: const Text('Sign out'),

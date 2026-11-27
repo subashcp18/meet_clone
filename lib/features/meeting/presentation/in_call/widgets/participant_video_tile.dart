@@ -2,7 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../../../../../core/utils/extensions.dart';
 import '../../../../../core/widgets/app_user_avatar.dart';
-import '../../../data/models/participant_model.dart';
+import '../../../data/models/meeting_participant.dart';
 
 class ParticipantVideoTile extends StatelessWidget {
   const ParticipantVideoTile({
@@ -12,7 +12,7 @@ class ParticipantVideoTile extends StatelessWidget {
     this.onTap,
   });
 
-  final ParticipantModel participant;
+  final MeetingParticipant participant;
   final bool isCompact;
   final VoidCallback? onTap;
 

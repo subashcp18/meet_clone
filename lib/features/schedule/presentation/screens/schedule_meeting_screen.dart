@@ -7,7 +7,7 @@ import '../../../../core/utils/formatters.dart';
 import '../../../../core/utils/validators.dart';
 import '../../../../core/widgets/app_error_banner.dart';
 import '../../../../core/widgets/app_primary_button.dart';
-import '../../data/models/schedule_meeting_request.dart';
+import '../../../meeting/data/models/scheduled_meeting.dart';
 import '../../providers/schedule_provider.dart';
 
 class ScheduleMeetingScreen extends ConsumerStatefulWidget {
@@ -110,7 +110,7 @@ class _ScheduleMeetingScreenState extends ConsumerState<ScheduleMeetingScreen> {
     final meeting = await ref
         .read(scheduleControllerProvider.notifier)
         .submit(
-          ScheduleMeetingRequest(
+          ScheduledMeeting(
             title: _titleController.text.trim(),
             startTime: startTime,
             durationMinutes: _durationMinutes,
@@ -119,7 +119,17 @@ class _ScheduleMeetingScreenState extends ConsumerState<ScheduleMeetingScreen> {
           ),
         );
 
-    if (!mounted || meeting == null) {
+    if (!mounted) {
+      return;
+    }
+
+    if (meeting == null) {
+      final error = ref.read(scheduleControllerProvider).errorMessage;
+      if (error != null) {
+        ScaffoldMessenger.of(context)
+          ..hideCurrentSnackBar()
+          ..showSnackBar(SnackBar(content: Text(error)));
+      }
       return;
     }
 
@@ -174,8 +184,10 @@ class _ScheduleMeetingScreenState extends ConsumerState<ScheduleMeetingScreen> {
                       controller: _titleController,
                       enabled: !scheduleState.isSubmitting,
                       textInputAction: TextInputAction.next,
-                      validator: (value) =>
-                          Validators.requiredField(value, label: 'Meeting title'),
+                      validator: (value) => Validators.requiredField(
+                        value,
+                        label: 'Meeting title',
+                      ),
                       decoration: const InputDecoration(
                         labelText: 'Meeting title',
                         hintText: 'Weekly sync, design review...',
@@ -228,8 +240,9 @@ class _ScheduleMeetingScreenState extends ConsumerState<ScheduleMeetingScreen> {
                             selected: _durationMinutes == minutes,
                             onSelected: scheduleState.isSubmitting
                                 ? null
-                                : (_) =>
-                                    setState(() => _durationMinutes = minutes),
+                                : (_) => setState(
+                                    () => _durationMinutes = minutes,
+                                  ),
                           ),
                       ],
                     ),
@@ -291,7 +304,9 @@ class _ScheduleMeetingScreenState extends ConsumerState<ScheduleMeetingScreen> {
                               label: Text(email),
                               onDeleted: scheduleState.isSubmitting
                                   ? null
-                                  : () => setState(() => _invitees.remove(email)),
+                                  : () => setState(
+                                      () => _invitees.remove(email),
+                                    ),
                             ),
                         ],
                       ),

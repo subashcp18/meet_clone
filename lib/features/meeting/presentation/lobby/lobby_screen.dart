@@ -10,8 +10,8 @@ import '../../../../core/widgets/app_loading_indicator.dart';
 import '../../../../core/widgets/app_user_avatar.dart';
 import '../../../../core/widgets/media_toggle_button.dart';
 import '../../../auth/providers/auth_provider.dart';
-import '../../data/models/meeting_lobby_info.dart';
-import '../../data/models/participant_model.dart';
+import '../../data/models/meeting.dart';
+import '../../data/models/meeting_participant.dart';
 import '../../providers/meeting_session_provider.dart';
 
 class LobbyScreen extends ConsumerWidget {
@@ -31,7 +31,16 @@ class LobbyScreen extends ConsumerWidget {
     final success = await ref
         .read(meetingSessionProvider.notifier)
         .joinMeeting(code: code, title: title);
-    if (!context.mounted || !success) {
+    if (!context.mounted) {
+      return;
+    }
+    if (!success) {
+      final error = ref.read(meetingSessionProvider).errorMessage;
+      if (error != null) {
+        ScaffoldMessenger.of(context)
+          ..hideCurrentSnackBar()
+          ..showSnackBar(SnackBar(content: Text(error)));
+      }
       return;
     }
     context.pushReplacement(RouteNames.meetingLocation(code));
@@ -59,8 +68,9 @@ class LobbyScreen extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final session = ref.watch(meetingSessionProvider);
-    final lobbyAsync = ref.watch(meetingLobbyProvider(code));
-    final authEmail = ref.watch(authProvider).email ?? 'You';
+    final lobbyAsync = ref.watch(joinMeetingProvider(code));
+    final authUser = ref.watch(authControllerProvider).asData?.value;
+    final authEmail = authUser?.email ?? authUser?.displayName ?? 'You';
     final colors = context.colors;
     final colorScheme = context.colorScheme;
     final textStyles = context.textStyles;
@@ -131,7 +141,7 @@ class LobbyScreen extends ConsumerWidget {
                   const SizedBox(height: 20),
                   _LobbyParticipantsSection(
                     lobbyAsync: lobbyAsync,
-                    onRetry: () => ref.invalidate(meetingLobbyProvider(code)),
+                    onRetry: () => ref.invalidate(joinMeetingProvider(code)),
                   ),
                   if (session.errorMessage != null) ...[
                     const SizedBox(height: 16),
@@ -314,7 +324,7 @@ class _LobbyParticipantsSection extends StatelessWidget {
     required this.onRetry,
   });
 
-  final AsyncValue<MeetingLobbyInfo> lobbyAsync;
+  final AsyncValue<Meeting> lobbyAsync;
   final VoidCallback onRetry;
 
   @override
@@ -328,12 +338,9 @@ class _LobbyParticipantsSection extends StatelessWidget {
         child: AppLoadingIndicator(size: 20),
       ),
       error: (error, _) {
-        final message = error is ApiException
-            ? error.message
-            : 'Unable to load meeting details.';
         return Column(
           children: [
-            AppErrorBanner(message: message),
+            AppErrorBanner(message: ApiException.friendlyMessage(error)),
             const SizedBox(height: 8),
             TextButton(
               onPressed: onRetry,
@@ -342,8 +349,8 @@ class _LobbyParticipantsSection extends StatelessWidget {
           ],
         );
       },
-      data: (info) {
-        final participants = info.waitingParticipants;
+      data: (meeting) {
+        final participants = meeting.participants;
         if (participants.isEmpty) {
           return Text(
             'No one else is here yet',
@@ -370,7 +377,7 @@ class _LobbyParticipantsSection extends StatelessWidget {
     );
   }
 
-  String _summaryText(List<ParticipantModel> participants) {
+  String _summaryText(List<MeetingParticipant> participants) {
     if (participants.length == 1) {
       return '${participants.first.name} is in this call';
     }
@@ -386,7 +393,7 @@ class _LobbyParticipantsSection extends StatelessWidget {
 class _AvatarStack extends StatelessWidget {
   const _AvatarStack({required this.participants});
 
-  final List<ParticipantModel> participants;
+  final List<MeetingParticipant> participants;
 
   @override
   Widget build(BuildContext context) {

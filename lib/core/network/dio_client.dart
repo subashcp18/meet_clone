@@ -1,43 +1,19 @@
 import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
-import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:riverpod_annotation/riverpod_annotation.dart';
 
-import '../constants/api_endpoints.dart';
+import '../config/app_env.dart';
 import 'api_interceptor.dart';
 import 'auth_interceptor.dart';
+import 'supabase_provider.dart';
 
 part 'dio_client.g.dart';
-
-@Riverpod(keepAlive: true)
-bool useMockApi(Ref ref) {
-  return const bool.fromEnvironment('USE_MOCK_API', defaultValue: true);
-}
-
-@Riverpod(keepAlive: true)
-FlutterSecureStorage secureStorage(Ref ref) {
-  return const FlutterSecureStorage();
-}
-
-@Riverpod(keepAlive: true)
-class SessionExpiredNotifier extends _$SessionExpiredNotifier {
-  @override
-  bool build() => false;
-
-  void markExpired() {
-    state = true;
-  }
-
-  void reset() {
-    state = false;
-  }
-}
 
 @Riverpod(keepAlive: true)
 Dio dioClient(Ref ref) {
   const timeout = Duration(seconds: 30);
   final baseOptions = BaseOptions(
-    baseUrl: ApiEndpoints.baseUrl,
+    baseUrl: AppEnv.edgeFunctionsBaseUrl,
     connectTimeout: timeout,
     receiveTimeout: timeout,
     sendTimeout: timeout,
@@ -47,18 +23,17 @@ Dio dioClient(Ref ref) {
     },
   );
 
-  final refreshDio = Dio(baseOptions)
-    ..interceptors.add(const ApiInterceptor());
-
-  final storage = ref.watch(secureStorageProvider);
+  final useMock = ref.watch(useMockApiProvider);
   final dio = Dio(baseOptions)
     ..interceptors.addAll([
       AuthInterceptor(
-        secureStorage: storage,
-        refreshDio: refreshDio,
-        onSessionExpired: () {
-          ref.read(sessionExpiredProvider.notifier).markExpired();
-        },
+        readAccessToken: useMock
+            ? () => null
+            : () => ref
+                .read(supabaseClientProvider)
+                .auth
+                .currentSession
+                ?.accessToken,
       ),
       const ApiInterceptor(),
       if (kDebugMode) ApiInterceptor.debugLogger(),

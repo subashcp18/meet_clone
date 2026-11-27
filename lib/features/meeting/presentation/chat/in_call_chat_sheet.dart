@@ -9,8 +9,10 @@ import '../../../../core/widgets/app_empty_state.dart';
 import '../../../../core/widgets/app_error_banner.dart';
 import '../../../../core/widgets/app_error_state.dart';
 import '../../../../core/widgets/app_loading_indicator.dart';
-import '../../data/models/chat_message_model.dart';
+import '../../data/models/chat_message.dart';
+import '../../data/repositories/chat_repository.dart';
 import '../../providers/meeting_chat_provider.dart';
+import '../../providers/meeting_session_provider.dart';
 
 class InCallChatSheet extends ConsumerStatefulWidget {
   const InCallChatSheet({
@@ -61,6 +63,11 @@ class _InCallChatSheetState extends ConsumerState<InCallChatSheet> {
   // endregion
 
   // region: ACTIONS
+  String get _meetingTargetId {
+    final sessionId = ref.read(meetingSessionProvider).meetingId;
+    return sessionId.isNotEmpty ? sessionId : widget.code;
+  }
+
   void _onTextChanged() {
     setState(() {
       if (_sendError != null) {
@@ -80,13 +87,18 @@ class _InCallChatSheetState extends ConsumerState<InCallChatSheet> {
       _sendError = null;
     });
 
-    final error = await ref
-        .read(meetingChatProvider(widget.code).notifier)
-        .sendMessage(text);
+    final result = await ref
+        .read(chatRepositoryProvider)
+        .send(_meetingTargetId, text);
 
     if (!mounted) {
       return;
     }
+
+    final error = result.when(
+      success: (_) => null,
+      failure: (exception) => exception.message,
+    );
 
     setState(() {
       _isSending = false;
@@ -108,7 +120,11 @@ class _InCallChatSheetState extends ConsumerState<InCallChatSheet> {
   // region: BUILD
   @override
   Widget build(BuildContext context) {
-    final chatAsync = ref.watch(meetingChatProvider(widget.code));
+    final sessionId = ref.watch(
+      meetingSessionProvider.select((s) => s.meetingId),
+    );
+    final targetId = sessionId.isNotEmpty ? sessionId : widget.code;
+    final chatAsync = ref.watch(meetingChatProvider(targetId));
     final colors = context.colors;
     final textStyles = context.textStyles;
     final bottomInset = MediaQuery.viewInsetsOf(context).bottom;
@@ -161,14 +177,10 @@ class _InCallChatSheetState extends ConsumerState<InCallChatSheet> {
                       message: 'Loading messages...',
                     ),
                     error: (error, _) {
-                      final message = error is ApiException
-                          ? error.message
-                          : 'Unable to load messages.';
                       return AppErrorState(
-                        message: message,
-                        onRetry: () => ref
-                            .read(meetingChatProvider(widget.code).notifier)
-                            .refresh(),
+                        message: ApiException.friendlyMessage(error),
+                        onRetry: () =>
+                            ref.invalidate(meetingChatProvider(targetId)),
                       );
                     },
                     data: (messages) {
@@ -242,7 +254,7 @@ class _InCallChatSheetState extends ConsumerState<InCallChatSheet> {
 class _ChatBubble extends StatelessWidget {
   const _ChatBubble({required this.message});
 
-  final ChatMessageModel message;
+  final ChatMessage message;
 
   @override
   Widget build(BuildContext context) {
@@ -280,7 +292,7 @@ class _ChatBubble extends StatelessWidget {
                 mainAxisSize: MainAxisSize.min,
                 children: [
                   Text(
-                    message.senderName,
+                    message.displaySender,
                     style: textStyles.labelMedium.copyWith(
                       color: textColor,
                       fontWeight: FontWeight.w700,
@@ -288,7 +300,7 @@ class _ChatBubble extends StatelessWidget {
                   ),
                   const SizedBox(width: 8),
                   Text(
-                    Formatters.formatTime(message.sentAt),
+                    Formatters.formatTime(message.createdAt),
                     style: textStyles.caption.copyWith(
                       color: textColor.withValues(alpha: 0.75),
                     ),
@@ -297,7 +309,7 @@ class _ChatBubble extends StatelessWidget {
               ),
               const SizedBox(height: 4),
               Text(
-                message.text,
+                message.body,
                 style: textStyles.bodyMedium.copyWith(color: textColor),
               ),
             ],

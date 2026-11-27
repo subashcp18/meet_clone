@@ -14,7 +14,7 @@ import '../../../../core/widgets/app_sheet_action_tile.dart';
 import '../../../../core/widgets/app_status_pill.dart';
 import '../../../../core/widgets/draggable_self_view.dart';
 import '../../../../core/widgets/media_toggle_button.dart';
-import '../../data/models/participant_model.dart';
+import '../../data/models/meeting_participant.dart';
 import '../../providers/in_call_ui_provider.dart';
 import '../../providers/meeting_session_provider.dart';
 import '../chat/in_call_chat_sheet.dart';
@@ -1053,7 +1053,7 @@ class _CallStage extends StatelessWidget {
   });
 
   final MeetingSessionState session;
-  final List<ParticipantModel> remoteParticipants;
+  final List<MeetingParticipant> remoteParticipants;
   final bool isLandscape;
   final VoidCallback onRetryJoin;
 
@@ -1093,7 +1093,7 @@ class _ParticipantGrid extends StatelessWidget {
     required this.isLandscape,
   });
 
-  final List<ParticipantModel> participants;
+  final List<MeetingParticipant> participants;
   final bool isLandscape;
 
   @override

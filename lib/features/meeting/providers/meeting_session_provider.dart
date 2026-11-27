@@ -1,10 +1,12 @@
 import 'package:flutter/foundation.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:riverpod_annotation/riverpod_annotation.dart';
 
 import '../../settings/providers/settings_provider.dart';
-import '../data/models/meeting_lobby_info.dart';
-import '../data/models/participant_model.dart';
+import '../data/models/meeting.dart';
+import '../data/models/meeting_participant.dart';
 import '../data/repositories/meeting_repository.dart';
+import '../data/repositories/participants_repository.dart';
 
 part 'meeting_session_provider.g.dart';
 
@@ -21,6 +23,7 @@ enum AudioOutputDevice {
 @immutable
 class MeetingSessionState {
   const MeetingSessionState({
+    this.meetingId = '',
     this.code = '',
     this.title = '',
     this.isMicOn = true,
@@ -31,9 +34,10 @@ class MeetingSessionState {
     this.audioOutput = AudioOutputDevice.speaker,
     this.isJoining = false,
     this.errorMessage,
-    this.participants = const <ParticipantModel>[],
+    this.participants = const <MeetingParticipant>[],
   });
 
+  final String meetingId;
   final String code;
   final String title;
   final bool isMicOn;
@@ -44,9 +48,10 @@ class MeetingSessionState {
   final AudioOutputDevice audioOutput;
   final bool isJoining;
   final String? errorMessage;
-  final List<ParticipantModel> participants;
+  final List<MeetingParticipant> participants;
 
   MeetingSessionState copyWith({
+    String? meetingId,
     String? code,
     String? title,
     bool? isMicOn,
@@ -57,9 +62,10 @@ class MeetingSessionState {
     AudioOutputDevice? audioOutput,
     bool? isJoining,
     String? errorMessage,
-    List<ParticipantModel>? participants,
+    List<MeetingParticipant>? participants,
   }) {
     return MeetingSessionState(
+      meetingId: meetingId ?? this.meetingId,
       code: code ?? this.code,
       title: title ?? this.title,
       isMicOn: isMicOn ?? this.isMicOn,
@@ -76,19 +82,33 @@ class MeetingSessionState {
 }
 
 @riverpod
-Future<MeetingLobbyInfo> meetingLobby(Ref ref, String code) async {
-  final result = await ref.read(meetingRepositoryProvider).getLobbyInfo(code);
+Future<Meeting> joinMeeting(Ref ref, String code) async {
+  final result = await ref.read(meetingRepositoryProvider).joinByCode(code);
   return result.when(
-    success: (info) => info,
+    success: (meeting) => meeting,
     failure: (exception) => throw exception,
   );
 }
 
+@riverpod
+Stream<List<MeetingParticipant>> meetingParticipants(
+  Ref ref,
+  String meetingId,
+) {
+  return ref.watch(participantsRepositoryProvider).watchParticipants(meetingId);
+}
+
 @Riverpod(keepAlive: true)
 class MeetingSessionNotifier extends _$MeetingSessionNotifier {
-  // region: BUILD
+  // region: SUBSCRIPTION & BUILD
+  ProviderSubscription<AsyncValue<List<MeetingParticipant>>>? _participantsSub;
+
   @override
   MeetingSessionState build() {
+    ref.onDispose(() {
+      _participantsSub?.close();
+      _participantsSub = null;
+    });
     final defaults = ref.read(settingsProvider);
     return MeetingSessionState(
       isMicOn: defaults.defaultMicOn,
@@ -106,6 +126,7 @@ class MeetingSessionNotifier extends _$MeetingSessionNotifier {
         (self) => self.copyWith(isMuted: !nextMic),
       ),
     );
+    _syncMyState(isMuted: !nextMic);
   }
 
   void toggleCamera() {
@@ -113,9 +134,10 @@ class MeetingSessionNotifier extends _$MeetingSessionNotifier {
     state = state.copyWith(
       isCameraOn: nextCamera,
       participants: _updateSelf(
-        (self) => self.copyWith(isVideoOn: nextCamera),
+        (self) => self.copyWith(isCameraOff: !nextCamera),
       ),
     );
+    _syncMyState(isCameraOff: !nextCamera);
   }
 
   void toggleCameraFacing() {
@@ -131,9 +153,10 @@ class MeetingSessionNotifier extends _$MeetingSessionNotifier {
     state = state.copyWith(
       isHandRaised: nextRaised,
       participants: _updateSelf(
-        (self) => self.copyWith(isHandRaised: nextRaised),
+        (self) => self.copyWith(handRaised: nextRaised),
       ),
     );
+    _syncMyState(handRaised: nextRaised);
   }
 
   void setAudioOutput(AudioOutputDevice device) {
@@ -145,16 +168,42 @@ class MeetingSessionNotifier extends _$MeetingSessionNotifier {
       isMicOn: micOn,
       isCameraOn: cameraOn,
       participants: _updateSelf(
-        (self) => self.copyWith(isMuted: !micOn, isVideoOn: cameraOn),
+        (self) => self.copyWith(isMuted: !micOn, isCameraOff: !cameraOn),
       ),
+    );
+    _syncMyState(isMuted: !micOn, isCameraOff: !cameraOn);
+  }
+
+  Future<void> _syncMyState({
+    bool? isMuted,
+    bool? isCameraOff,
+    bool? handRaised,
+  }) async {
+    final meetingId = state.meetingId;
+    if (meetingId.isEmpty) {
+      return;
+    }
+    final result = await ref
+        .read(participantsRepositoryProvider)
+        .updateMyState(
+          meetingId,
+          isMuted: isMuted,
+          isCameraOff: isCameraOff,
+          handRaised: handRaised,
+        );
+    result.when(
+      success: (_) {},
+      failure: (exception) {
+        state = state.copyWith(errorMessage: exception.message);
+      },
     );
   }
 
-  List<ParticipantModel> _updateSelf(
-    ParticipantModel Function(ParticipantModel self) transform,
+  List<MeetingParticipant> _updateSelf(
+    MeetingParticipant Function(MeetingParticipant self) transform,
   ) {
     return state.participants
-        .map((participant) => participant.isSelf ? transform(participant) : participant)
+        .map((p) => p.isSelf ? transform(p) : p)
         .toList();
   }
   // endregion
@@ -173,47 +222,47 @@ class MeetingSessionNotifier extends _$MeetingSessionNotifier {
       }
       return;
     }
-    final result = await ref
-        .read(meetingRepositoryProvider)
-        .muteParticipant(state.code, participantId);
-    result.when(
-      success: (_) {
-        state = state.copyWith(
-          participants: state.participants
-              .map(
-                (p) => p.id == participantId
-                    ? p.copyWith(isMuted: true, isSpeaking: false)
-                    : p,
-              )
-              .toList(),
-        );
-      },
-      failure: (exception) {
-        state = state.copyWith(errorMessage: exception.message);
-      },
+    state = state.copyWith(
+      participants: state.participants
+          .map(
+            (p) => p.id == participantId
+                ? p.copyWith(isMuted: true, isSpeaking: false)
+                : p,
+          )
+          .toList(),
     );
   }
 
   Future<void> removeParticipant(String participantId) async {
-    final result = await ref
-        .read(meetingRepositoryProvider)
-        .removeParticipant(state.code, participantId);
-    result.when(
-      success: (_) {
-        state = state.copyWith(
-          participants: state.participants
-              .where((p) => p.id != participantId || p.isSelf)
-              .toList(),
-        );
-      },
-      failure: (exception) {
-        state = state.copyWith(errorMessage: exception.message);
-      },
+    state = state.copyWith(
+      participants: state.participants
+          .where((p) => p.id != participantId || p.isSelf)
+          .toList(),
     );
   }
   // endregion
 
   // region: SESSION LIFECYCLE
+  void _subscribeParticipants(String meetingId) {
+    _participantsSub?.close();
+    _participantsSub = ref.listen<AsyncValue<List<MeetingParticipant>>>(
+      meetingParticipantsProvider(meetingId),
+      (_, next) {
+        final liveParticipants = next.asData?.value;
+        if (liveParticipants != null) {
+          final self = liveParticipants.where((p) => p.isSelf).firstOrNull;
+          state = state.copyWith(
+            participants: liveParticipants,
+            isMicOn: self != null ? !self.isMuted : state.isMicOn,
+            isCameraOn: self != null ? !self.isCameraOff : state.isCameraOn,
+            isHandRaised: self != null ? self.handRaised : state.isHandRaised,
+          );
+        }
+      },
+      fireImmediately: true,
+    );
+  }
+
   Future<bool> joinMeeting({
     required String code,
     required String title,
@@ -225,18 +274,27 @@ class MeetingSessionNotifier extends _$MeetingSessionNotifier {
       errorMessage: null,
     );
 
-    final result = await ref.read(meetingRepositoryProvider).joinMeeting(
-      code,
-      micOn: state.isMicOn,
-      cameraOn: state.isCameraOn,
-    );
+    final result = await ref.read(meetingRepositoryProvider).joinByCode(code);
 
     return result.when(
-      success: (participants) {
+      success: (meeting) async {
+        final initialParticipants = meeting.participants;
         state = state.copyWith(
+          meetingId: meeting.id,
+          code: meeting.code,
+          title: meeting.title.isNotEmpty ? meeting.title : title,
           isJoining: false,
-          participants: participants,
+          participants: initialParticipants,
         );
+        _subscribeParticipants(meeting.id);
+        await ref
+            .read(participantsRepositoryProvider)
+            .updateMyState(
+              meeting.id,
+              isMuted: !state.isMicOn,
+              isCameraOff: !state.isCameraOn,
+              handRaised: state.isHandRaised,
+            );
         return true;
       },
       failure: (exception) {
@@ -257,9 +315,27 @@ class MeetingSessionNotifier extends _$MeetingSessionNotifier {
   }
 
   Future<void> leaveCall() async {
-    final activeCode = state.code;
-    if (activeCode.isNotEmpty) {
-      await ref.read(meetingRepositoryProvider).leaveMeeting(activeCode);
+    _participantsSub?.close();
+    _participantsSub = null;
+    final activeId = state.meetingId.isNotEmpty ? state.meetingId : state.code;
+    if (activeId.isNotEmpty) {
+      await ref.read(meetingRepositoryProvider).leaveMeeting(activeId);
+    }
+    final defaults = ref.read(settingsProvider);
+    state = MeetingSessionState(
+      isMicOn: defaults.defaultMicOn,
+      isCameraOn: defaults.defaultCameraOn,
+      isFrontCamera: state.isFrontCamera,
+      audioOutput: state.audioOutput,
+    );
+  }
+
+  Future<void> endCall() async {
+    _participantsSub?.close();
+    _participantsSub = null;
+    final activeId = state.meetingId.isNotEmpty ? state.meetingId : state.code;
+    if (activeId.isNotEmpty) {
+      await ref.read(meetingRepositoryProvider).endMeeting(activeId);
     }
     final defaults = ref.read(settingsProvider);
     state = MeetingSessionState(

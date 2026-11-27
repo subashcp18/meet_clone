@@ -2,7 +2,10 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
+import '../../features/auth/data/models/profile.dart';
+import '../../features/auth/presentation/screens/forgot_password_screen.dart';
 import '../../features/auth/presentation/screens/login_screen.dart';
+import '../../features/auth/presentation/screens/register_screen.dart';
 import '../../features/auth/presentation/screens/splash_screen.dart';
 import '../../features/auth/providers/auth_provider.dart';
 import '../../features/home/presentation/screens/home_screen.dart';
@@ -15,13 +18,13 @@ import 'route_names.dart';
 
 class _RouterRefreshNotifier extends ChangeNotifier {
   _RouterRefreshNotifier(Ref ref) {
-    _subscription = ref.listen<AuthState>(
-      authProvider,
+    _subscription = ref.listen<AsyncValue<Profile?>>(
+      authControllerProvider,
       (_, _) => notifyListeners(),
     );
   }
 
-  late final ProviderSubscription<AuthState> _subscription;
+  late final ProviderSubscription<AsyncValue<Profile?>> _subscription;
 
   @override
   void dispose() {
@@ -34,27 +37,42 @@ final appRouterProvider = Provider<GoRouter>((ref) {
   final refreshNotifier = _RouterRefreshNotifier(ref);
   ref.onDispose(refreshNotifier.dispose);
 
+  const publicAuthPaths = {
+    RouteNames.loginPath,
+    RouteNames.registerPath,
+    RouteNames.forgotPasswordPath,
+  };
+
   return GoRouter(
     initialLocation: RouteNames.splashPath,
     refreshListenable: refreshNotifier,
     // region: REDIRECT
     redirect: (context, state) {
-      final authState = ref.read(authProvider);
+      final authAsync = ref.read(authControllerProvider);
       final location = state.matchedLocation;
 
-      if (authState.status == AuthStatus.unknown) {
-        return location == RouteNames.splashPath
-            ? null
-            : RouteNames.splashPath;
+      if (location == RouteNames.splashPath) {
+        if (authAsync.isLoading || authAsync.hasError) {
+          return null;
+        }
+        return authAsync.value != null
+            ? RouteNames.homePath
+            : RouteNames.loginPath;
       }
 
-      if (authState.status == AuthStatus.unauthenticated) {
-        return location == RouteNames.loginPath ? null : RouteNames.loginPath;
+      if (publicAuthPaths.contains(location)) {
+        if (authAsync.hasValue && authAsync.value != null) {
+          return RouteNames.homePath;
+        }
+        return null;
       }
 
-      if (location == RouteNames.splashPath ||
-          location == RouteNames.loginPath) {
-        return RouteNames.homePath;
+      if (authAsync.isLoading && !authAsync.hasValue) {
+        return RouteNames.splashPath;
+      }
+
+      if (authAsync.value == null) {
+        return RouteNames.loginPath;
       }
 
       return null;
@@ -71,6 +89,16 @@ final appRouterProvider = Provider<GoRouter>((ref) {
         path: RouteNames.loginPath,
         name: RouteNames.login,
         builder: (context, state) => const LoginScreen(),
+      ),
+      GoRoute(
+        path: RouteNames.registerPath,
+        name: RouteNames.register,
+        builder: (context, state) => const RegisterScreen(),
+      ),
+      GoRoute(
+        path: RouteNames.forgotPasswordPath,
+        name: RouteNames.forgotPassword,
+        builder: (context, state) => const ForgotPasswordScreen(),
       ),
       GoRoute(
         path: RouteNames.homePath,

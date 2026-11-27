@@ -1,101 +1,193 @@
+import 'dart:async';
+
 import 'package:flutter/foundation.dart';
 import 'package:riverpod_annotation/riverpod_annotation.dart';
 
-import '../../../core/network/dio_client.dart';
+import '../data/models/profile.dart';
 import '../data/repositories/auth_repository.dart';
 
 part 'auth_provider.g.dart';
 
-enum AuthStatus { unknown, authenticated, unauthenticated }
+enum RegisterOutcome {
+  signedIn,
+  confirmationRequired,
+  failed,
+}
 
 @immutable
-class AuthState {
-  const AuthState._({
-    required this.status,
-    this.email,
+class AuthFormState {
+  const AuthFormState({
+    this.isLoading = false,
     this.errorMessage,
-    this.isBusy = false,
+    this.isSubmitted = false,
   });
 
-  const AuthState.unknown() : this._(status: AuthStatus.unknown);
-
-  const AuthState.authenticated(String email)
-    : this._(status: AuthStatus.authenticated, email: email);
-
-  const AuthState.unauthenticated({String? errorMessage})
-    : this._(status: AuthStatus.unauthenticated, errorMessage: errorMessage);
-
-  final AuthStatus status;
-  final String? email;
+  final bool isLoading;
   final String? errorMessage;
-  final bool isBusy;
+  final bool isSubmitted;
 
-  AuthState copyWith({
-    AuthStatus? status,
-    String? email,
+  AuthFormState copyWith({
+    bool? isLoading,
     String? errorMessage,
-    bool? isBusy,
+    bool? isSubmitted,
   }) {
-    return AuthState._(
-      status: status ?? this.status,
-      email: email ?? this.email,
+    return AuthFormState(
+      isLoading: isLoading ?? this.isLoading,
       errorMessage: errorMessage,
-      isBusy: isBusy ?? this.isBusy,
+      isSubmitted: isSubmitted ?? this.isSubmitted,
     );
   }
 }
 
 @Riverpod(keepAlive: true)
-class AuthNotifier extends _$AuthNotifier {
-  // region: BUILD
+class AuthController extends _$AuthController {
+  // region: STATE & BUILD
+  StreamSubscription<Profile?>? _authSubscription;
+
   @override
-  AuthState build() {
-    ref.listen<bool>(sessionExpiredProvider, (_, expired) {
-      if (expired) {
-        state = const AuthState.unauthenticated();
-        ref.read(sessionExpiredProvider.notifier).reset();
-      }
+  Future<Profile?> build() async {
+    final repository = ref.watch(authRepositoryProvider);
+
+    await _authSubscription?.cancel();
+    _authSubscription = repository.authStateChanges.listen(
+      (profile) {
+        state = AsyncData(profile);
+      },
+      onError: (Object error, StackTrace stackTrace) {
+        state = AsyncError(error, stackTrace);
+      },
+    );
+    ref.onDispose(() {
+      _authSubscription?.cancel();
+      _authSubscription = null;
     });
-    return const AuthState.unknown();
+
+    final result = await repository.getCurrentUser();
+    return result.when(
+      success: (user) => user,
+      failure: (exception) => throw exception,
+    );
   }
   // endregion
 
   // region: ACTIONS
-  Future<void> checkSession() async {
-    final result = await ref.read(authRepositoryProvider).getCurrentUserEmail();
-    result.when(
-      success: (email) {
-        if (email != null && email.isNotEmpty) {
-          state = AuthState.authenticated(email);
-        } else {
-          state = const AuthState.unauthenticated();
-        }
-      },
-      failure: (_) {
-        state = const AuthState.unauthenticated();
-      },
-    );
+  void setAuthenticatedUser(Profile profile) {
+    state = AsyncData(profile);
   }
 
-  Future<bool> signIn(String email) async {
-    state = state.copyWith(isBusy: true, errorMessage: null);
-    final result = await ref.read(authRepositoryProvider).signInWithEmail(email);
+  Future<void> signOut() async {
+    state = const AsyncLoading();
+    await ref.read(authRepositoryProvider).signOut();
+    state = const AsyncData(null);
+  }
+
+  void retrySessionRestore() {
+    ref.invalidateSelf();
+  }
+  // endregion
+}
+
+@riverpod
+class LoginController extends _$LoginController {
+  @override
+  AuthFormState build() => const AuthFormState();
+
+  void clearError() {
+    if (state.errorMessage != null) {
+      state = state.copyWith(errorMessage: null);
+    }
+  }
+
+  Future<bool> submit({
+    required String email,
+    required String password,
+  }) async {
+    state = const AuthFormState(isLoading: true);
+    final result = await ref
+        .read(authRepositoryProvider)
+        .signIn(email: email, password: password);
     return result.when(
-      success: (signedInEmail) {
-        state = AuthState.authenticated(signedInEmail);
+      success: (profile) {
+        ref.read(authControllerProvider.notifier).setAuthenticatedUser(profile);
+        state = const AuthFormState();
         return true;
       },
       failure: (exception) {
-        state = AuthState.unauthenticated(errorMessage: exception.message);
+        state = AuthFormState(errorMessage: exception.message);
         return false;
       },
     );
   }
+}
 
-  Future<void> signOut() async {
-    state = state.copyWith(isBusy: true, errorMessage: null);
-    await ref.read(authRepositoryProvider).signOut();
-    state = const AuthState.unauthenticated();
+@riverpod
+class RegisterController extends _$RegisterController {
+  @override
+  AuthFormState build() => const AuthFormState();
+
+  void clearError() {
+    if (state.errorMessage != null) {
+      state = state.copyWith(errorMessage: null);
+    }
   }
-  // endregion
+
+  Future<RegisterOutcome> submit({
+    required String fullName,
+    required String email,
+    required String password,
+  }) async {
+    state = const AuthFormState(isLoading: true);
+    final result = await ref
+        .read(authRepositoryProvider)
+        .signUp(
+          email: email,
+          password: password,
+          displayName: fullName,
+        );
+    return result.when(
+      success: (profile) {
+        state = const AuthFormState();
+        if (profile != null) {
+          ref
+              .read(authControllerProvider.notifier)
+              .setAuthenticatedUser(profile);
+          return RegisterOutcome.signedIn;
+        }
+        return RegisterOutcome.confirmationRequired;
+      },
+      failure: (exception) {
+        state = AuthFormState(errorMessage: exception.message);
+        return RegisterOutcome.failed;
+      },
+    );
+  }
+}
+
+@riverpod
+class ForgotPasswordController extends _$ForgotPasswordController {
+  @override
+  AuthFormState build() => const AuthFormState();
+
+  void clearFeedback() {
+    if (state.errorMessage != null || state.isSubmitted) {
+      state = const AuthFormState();
+    }
+  }
+
+  Future<bool> submit({required String email}) async {
+    state = const AuthFormState(isLoading: true);
+    final result = await ref
+        .read(authRepositoryProvider)
+        .resetPassword(email: email);
+    return result.when(
+      success: (_) {
+        state = const AuthFormState(isSubmitted: true);
+        return true;
+      },
+      failure: (exception) {
+        state = AuthFormState(errorMessage: exception.message);
+        return false;
+      },
+    );
+  }
 }

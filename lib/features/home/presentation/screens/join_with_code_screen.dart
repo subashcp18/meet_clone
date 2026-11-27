@@ -2,12 +2,13 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
+import '../../../../core/network/api_exception.dart';
 import '../../../../core/router/route_names.dart';
 import '../../../../core/utils/extensions.dart';
 import '../../../../core/utils/validators.dart';
 import '../../../../core/widgets/app_error_banner.dart';
 import '../../../../core/widgets/app_primary_button.dart';
-import '../../data/repositories/home_repository.dart';
+import '../../../meeting/providers/meeting_session_provider.dart';
 
 class JoinWithCodeScreen extends ConsumerStatefulWidget {
   const JoinWithCodeScreen({super.key});
@@ -59,23 +60,27 @@ class _JoinWithCodeScreenState extends ConsumerState<JoinWithCodeScreen> {
       _errorMessage = null;
     });
 
-    final result = await ref.read(homeRepositoryProvider).lookupMeetingByCode(code);
-    if (!mounted) {
-      return;
+    try {
+      ref.invalidate(joinMeetingProvider(code));
+      final meeting = await ref.read(joinMeetingProvider(code).future);
+      if (!mounted) {
+        return;
+      }
+      setState(() => _isLoading = false);
+      context.pushReplacement(RouteNames.lobbyLocation(meeting.code));
+    } catch (error) {
+      if (!mounted) {
+        return;
+      }
+      final message = ApiException.friendlyMessage(error);
+      setState(() {
+        _isLoading = false;
+        _errorMessage = message;
+      });
+      ScaffoldMessenger.of(context)
+        ..hideCurrentSnackBar()
+        ..showSnackBar(SnackBar(content: Text(message)));
     }
-
-    result.when(
-      success: (meeting) {
-        setState(() => _isLoading = false);
-        context.pushReplacement(RouteNames.lobbyLocation(meeting.code));
-      },
-      failure: (exception) {
-        setState(() {
-          _isLoading = false;
-          _errorMessage = exception.message;
-        });
-      },
-    );
   }
   // endregion
 

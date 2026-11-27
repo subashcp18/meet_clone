@@ -1,247 +1,331 @@
-import 'package:dio/dio.dart';
-import 'package:riverpod_annotation/riverpod_annotation.dart';
+import 'dart:math';
 
-import '../../../../core/constants/api_endpoints.dart';
+import 'package:riverpod_annotation/riverpod_annotation.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
+
+import '../../../../core/network/api_exception.dart';
 import '../../../../core/network/api_result.dart';
 import '../../../../core/network/base_repository.dart';
-import '../../../../core/network/dio_client.dart';
-import '../models/chat_message_model.dart';
-import '../models/meeting_lobby_info.dart';
-import '../models/participant_model.dart';
+import '../../../../core/network/supabase_provider.dart';
+import '../models/meeting.dart';
+import '../models/meeting_participant.dart';
+import '../models/scheduled_meeting.dart';
 
 part 'meeting_repository.g.dart';
 
 abstract interface class MeetingRepository {
-  Future<Result<MeetingLobbyInfo>> getLobbyInfo(String code);
-  Future<Result<List<ParticipantModel>>> joinMeeting(
-    String code, {
-    required bool micOn,
-    required bool cameraOn,
-  });
-  Future<Result<void>> leaveMeeting(String code);
-  Future<Result<void>> muteParticipant(String code, String participantId);
-  Future<Result<void>> removeParticipant(String code, String participantId);
-  Future<Result<List<ChatMessageModel>>> getChatMessages(String code);
-  Future<Result<ChatMessageModel>> sendChatMessage(String code, String text);
+  Future<Result<Meeting>> createInstantMeeting();
+  Future<Result<Meeting>> scheduleMeeting(ScheduledMeeting request);
+  Future<Result<Meeting>> joinByCode(String code);
+  Future<Result<void>> leaveMeeting(String meetingId);
+  Future<Result<List<Meeting>>> listUpcoming();
+  Future<Result<void>> endMeeting(String meetingId);
 }
 
 class MockMeetingRepository implements MeetingRepository {
-  static const List<ParticipantModel> _defaultParticipants = [
-    ParticipantModel(
-      id: 'p-1',
-      name: 'Alex Morgan',
+  static const String _alphabet = 'abcdefghijkmnpqrstuvwxyz';
+  final Random _random = Random();
+
+  static List<MeetingParticipant> _mockParticipantsFor(String meetingId) => [
+    MeetingParticipant(
+      meetingId: meetingId,
+      userId: 'p-1',
+      displayName: 'Alex Morgan',
       email: 'alex.morgan@example.com',
       isHost: true,
       isSpeaking: true,
     ),
-    ParticipantModel(
-      id: 'p-2',
-      name: 'Sam Rivera',
+    MeetingParticipant(
+      meetingId: meetingId,
+      userId: 'p-2',
+      displayName: 'Sam Rivera',
       email: 'sam.rivera@example.com',
       isMuted: true,
     ),
-    ParticipantModel(
-      id: 'p-3',
-      name: 'Jordan Lee',
+    MeetingParticipant(
+      meetingId: meetingId,
+      userId: 'p-3',
+      displayName: 'Jordan Lee',
       email: 'jordan.lee@example.com',
-      isVideoOn: false,
-      isHandRaised: true,
+      isCameraOff: true,
+      handRaised: true,
     ),
-    ParticipantModel(
-      id: 'p-4',
-      name: 'Taylor Kim',
+    MeetingParticipant(
+      meetingId: meetingId,
+      userId: 'p-4',
+      displayName: 'Taylor Kim',
       email: 'taylor.kim@example.com',
     ),
   ];
 
+  List<Meeting> _mockUpcoming() {
+    final now = DateTime.now();
+    final todayBase = DateTime(now.year, now.month, now.day, 14, 30);
+
+    return [
+      Meeting(
+        id: 'm-1',
+        title: 'Product Design Sync',
+        code: 'abc-defg-hij',
+        hostId: 'p-1',
+        hostName: 'Alex Morgan',
+        scheduledAt: todayBase,
+        durationMinutes: 45,
+        status: 'live',
+        participants: _mockParticipantsFor('m-1'),
+      ),
+      Meeting(
+        id: 'm-2',
+        title: 'Flutter Architecture Review',
+        code: 'kmn-pqrs-tuv',
+        hostId: 'p-2',
+        hostName: 'Sam Rivera',
+        scheduledAt: todayBase.add(const Duration(hours: 2)),
+        durationMinutes: 30,
+        status: 'scheduled',
+        participants: _mockParticipantsFor('m-2'),
+      ),
+      Meeting(
+        id: 'm-3',
+        title: 'Weekly Sprint Planning',
+        code: 'wxy-zabc-def',
+        hostId: 'p-3',
+        hostName: 'Jordan Lee',
+        scheduledAt: todayBase.add(const Duration(days: 1, hours: -4)),
+        durationMinutes: 60,
+        status: 'scheduled',
+        participants: _mockParticipantsFor('m-3'),
+      ),
+    ];
+  }
+
   @override
-  Future<Result<MeetingLobbyInfo>> getLobbyInfo(String code) async {
+  Future<Result<Meeting>> createInstantMeeting() async {
     await Future<void>.delayed(const Duration(milliseconds: 150));
-    final title = switch (code) {
-      'abc-defg-hij' => 'Product Design Sync',
-      'kmn-pqrs-tuv' => 'Flutter Architecture Review',
-      'wxy-zabc-def' => 'Weekly Sprint Planning',
-      _ => 'Meeting ($code)',
-    };
+    final code = '${_segment(3)}-${_segment(4)}-${_segment(3)}';
+    final now = DateTime.now();
     return Success(
-      MeetingLobbyInfo(
+      Meeting(
+        id: 'm-${now.millisecondsSinceEpoch}',
+        title: 'Instant meeting',
         code: code,
-        title: title,
-        waitingParticipants: _defaultParticipants,
+        hostId: 'u-mock',
+        hostName: 'You',
+        isInstant: true,
+        status: 'live',
+        createdAt: now,
+        durationMinutes: 60,
       ),
     );
   }
 
   @override
-  Future<Result<List<ParticipantModel>>> joinMeeting(
-    String code, {
-    required bool micOn,
-    required bool cameraOn,
-  }) async {
+  Future<Result<Meeting>> scheduleMeeting(ScheduledMeeting request) async {
     await Future<void>.delayed(const Duration(milliseconds: 150));
-    return Success([
-      ParticipantModel(
-        id: 'p-self',
-        name: 'You',
-        email: 'you@example.com',
-        isSelf: true,
-        isMuted: !micOn,
-        isVideoOn: cameraOn,
-      ),
-      ..._defaultParticipants,
-    ]);
-  }
-
-  @override
-  Future<Result<void>> leaveMeeting(String code) async {
-    await Future<void>.delayed(const Duration(milliseconds: 100));
-    return const Success(null);
-  }
-
-  @override
-  Future<Result<void>> muteParticipant(String code, String participantId) async {
-    await Future<void>.delayed(const Duration(milliseconds: 100));
-    return const Success(null);
-  }
-
-  @override
-  Future<Result<void>> removeParticipant(
-    String code,
-    String participantId,
-  ) async {
-    await Future<void>.delayed(const Duration(milliseconds: 100));
-    return const Success(null);
-  }
-
-  @override
-  Future<Result<List<ChatMessageModel>>> getChatMessages(String code) async {
-    await Future<void>.delayed(const Duration(milliseconds: 120));
-    final now = DateTime.now();
-    return Success([
-      ChatMessageModel(
-        id: 'c-1',
-        senderId: 'p-1',
-        senderName: 'Alex Morgan',
-        text: 'Welcome everyone! Let us kick off once everyone has joined.',
-        sentAt: now.subtract(const Duration(minutes: 2)),
-      ),
-      ChatMessageModel(
-        id: 'c-2',
-        senderId: 'p-2',
-        senderName: 'Sam Rivera',
-        text: 'Sharing the updated wireframes in a moment.',
-        sentAt: now.subtract(const Duration(minutes: 1)),
-      ),
-    ]);
-  }
-
-  @override
-  Future<Result<ChatMessageModel>> sendChatMessage(
-    String code,
-    String text,
-  ) async {
-    await Future<void>.delayed(const Duration(milliseconds: 100));
-    final now = DateTime.now();
+    final code = '${_segment(3)}-${_segment(4)}-${_segment(3)}';
     return Success(
-      ChatMessageModel(
-        id: 'c-${now.microsecondsSinceEpoch}',
-        senderId: 'p-self',
-        senderName: 'You',
-        text: text.trim(),
-        sentAt: now,
-        isSelf: true,
+      Meeting(
+        id: 'm-${DateTime.now().millisecondsSinceEpoch}',
+        title: request.title.trim(),
+        code: code,
+        hostId: 'u-mock',
+        hostName: 'You',
+        scheduledAt: request.startTime,
+        durationMinutes: request.durationMinutes,
+        status: 'scheduled',
+        notes: request.notes,
       ),
     );
+  }
+
+  @override
+  Future<Result<Meeting>> joinByCode(String code) async {
+    await Future<void>.delayed(const Duration(milliseconds: 150));
+    final existing = _mockUpcoming().where((m) => m.code == code).firstOrNull;
+    final meetingId = existing?.id ?? 'm-$code';
+    return Success(
+      Meeting(
+        id: meetingId,
+        title: existing?.title ?? 'Meeting ($code)',
+        code: code,
+        hostId: existing?.hostId ?? 'p-1',
+        hostName: existing?.hostName ?? 'Host',
+        scheduledAt: existing?.scheduledAt ?? DateTime.now(),
+        durationMinutes: existing?.durationMinutes ?? 60,
+        status: 'live',
+        participants: existing?.participants ?? _mockParticipantsFor(meetingId),
+      ),
+    );
+  }
+
+  @override
+  Future<Result<void>> leaveMeeting(String meetingId) async {
+    await Future<void>.delayed(const Duration(milliseconds: 100));
+    return const Success(null);
+  }
+
+  @override
+  Future<Result<List<Meeting>>> listUpcoming() async {
+    await Future<void>.delayed(const Duration(milliseconds: 150));
+    return Success(_mockUpcoming());
+  }
+
+  @override
+  Future<Result<void>> endMeeting(String meetingId) async {
+    await Future<void>.delayed(const Duration(milliseconds: 100));
+    return const Success(null);
+  }
+
+  String _segment(int length) {
+    return List.generate(
+      length,
+      (_) => _alphabet[_random.nextInt(_alphabet.length)],
+    ).join();
   }
 }
 
-class RemoteMeetingRepository extends BaseRepository implements MeetingRepository {
-  const RemoteMeetingRepository(this._dio);
+class SupabaseMeetingRepository extends BaseRepository
+    implements MeetingRepository {
+  const SupabaseMeetingRepository(this._client);
 
-  final Dio _dio;
-
-  @override
-  Future<Result<MeetingLobbyInfo>> getLobbyInfo(String code) {
-    return guard(() async {
-      final response = await _dio.get<Map<String, dynamic>>(
-        ApiEndpoints.meetingByCode(code),
-      );
-      return MeetingLobbyInfo.fromJson(
-        response.data ?? const <String, dynamic>{},
-      );
-    });
-  }
+  final SupabaseClient _client;
 
   @override
-  Future<Result<List<ParticipantModel>>> joinMeeting(
-    String code, {
-    required bool micOn,
-    required bool cameraOn,
-  }) {
+  Future<Result<Meeting>> createInstantMeeting() {
     return guard(() async {
-      final response = await _dio.post<List<dynamic>>(
-        ApiEndpoints.joinMeeting(code),
-        data: {
-          'mic_on': micOn,
-          'camera_on': cameraOn,
+      final result = await _client.rpc<dynamic>(
+        'create_meeting',
+        params: {
+          'title': 'Instant meeting',
+          'is_instant': true,
+          'scheduled_at': null,
         },
       );
-      final items = response.data ?? const <dynamic>[];
-      return items
-          .whereType<Map<String, dynamic>>()
-          .map(ParticipantModel.fromJson)
-          .toList();
+      return Meeting.fromJson(_extractMap(result)).copyWith(hostName: 'You');
     });
   }
 
   @override
-  Future<Result<void>> leaveMeeting(String code) {
+  Future<Result<Meeting>> scheduleMeeting(ScheduledMeeting request) {
     return guard(() async {
-      await _dio.post<void>(ApiEndpoints.leaveMeeting(code));
-    });
-  }
-
-  @override
-  Future<Result<void>> muteParticipant(String code, String participantId) {
-    return guard(() async {
-      await _dio.post<void>(ApiEndpoints.muteParticipant(code, participantId));
-    });
-  }
-
-  @override
-  Future<Result<void>> removeParticipant(String code, String participantId) {
-    return guard(() async {
-      await _dio.delete<void>(
-        ApiEndpoints.removeParticipant(code, participantId),
+      final result = await _client.rpc<dynamic>(
+        'create_meeting',
+        params: {
+          'title': request.title.trim(),
+          'is_instant': false,
+          'scheduled_at': request.startTime.toUtc().toIso8601String(),
+        },
+      );
+      return Meeting.fromJson(_extractMap(result)).copyWith(
+        hostName: 'You',
+        durationMinutes: request.durationMinutes,
+        notes: request.notes,
       );
     });
   }
 
   @override
-  Future<Result<List<ChatMessageModel>>> getChatMessages(String code) {
+  Future<Result<Meeting>> joinByCode(String code) {
     return guard(() async {
-      final response = await _dio.get<List<dynamic>>(
-        ApiEndpoints.chatMessages(code),
+      final normalized = code.trim().toLowerCase();
+      final result = await _client.rpc<dynamic>(
+        'join_meeting',
+        params: {'code': normalized},
       );
-      final items = response.data ?? const <dynamic>[];
-      return items
-          .whereType<Map<String, dynamic>>()
-          .map(ChatMessageModel.fromJson)
-          .toList();
+      final meeting = Meeting.fromJson(_extractMap(result));
+      final hostProfile = await _client
+          .from('profiles')
+          .select('display_name')
+          .eq('id', meeting.hostId)
+          .maybeSingle();
+      final hostName = hostProfile?['display_name'] as String? ?? 'Host';
+
+      final participantRows = await _client
+          .from('meeting_participants')
+          .select('*, profile:profiles(display_name, avatar_url)')
+          .eq('meeting_id', meeting.id)
+          .isFilter('left_at', null);
+
+      final currentUid = _client.auth.currentUser?.id;
+      final participants = participantRows.map((row) {
+        final profileData = row['profile'];
+        final displayName = profileData is Map<String, dynamic>
+            ? (profileData['display_name'] as String? ?? 'Participant')
+            : 'Participant';
+        final avatarUrl = profileData is Map<String, dynamic>
+            ? profileData['avatar_url'] as String?
+            : null;
+        final cleaned = Map<String, dynamic>.from(row)..remove('profile');
+        final participant = MeetingParticipant.fromJson(cleaned);
+        return participant.copyWith(
+          displayName: displayName,
+          avatarUrl: avatarUrl,
+          isHost: participant.userId == meeting.hostId,
+          isSelf: participant.userId == currentUid,
+        );
+      }).toList();
+
+      return meeting.copyWith(
+        hostName: hostName,
+        participants: participants,
+      );
     });
   }
 
   @override
-  Future<Result<ChatMessageModel>> sendChatMessage(String code, String text) {
+  Future<Result<void>> leaveMeeting(String meetingId) {
     return guard(() async {
-      final response = await _dio.post<Map<String, dynamic>>(
-        ApiEndpoints.sendChatMessage(code),
-        data: {'text': text.trim()},
-      );
-      return ChatMessageModel.fromJson(
-        response.data ?? const <String, dynamic>{},
+      await _client.rpc<void>(
+        'leave_meeting',
+        params: {'meeting_id': meetingId},
       );
     });
+  }
+
+  @override
+  Future<Result<List<Meeting>>> listUpcoming() {
+    return guard(() async {
+      final nowIso = DateTime.now().toUtc().toIso8601String();
+      final rows = await _client
+          .from('meetings')
+          .select('*, host:profiles!host_id(display_name)')
+          .or('status.eq.live,and(status.eq.scheduled,scheduled_at.gte.$nowIso)')
+          .order('scheduled_at', ascending: true, nullsFirst: false)
+          .order('created_at', ascending: false);
+
+      if (rows.isEmpty) {
+        return const <Meeting>[];
+      }
+
+      return rows.map((row) {
+        final hostData = row['host'];
+        final hostName = hostData is Map<String, dynamic>
+            ? (hostData['display_name'] as String? ?? 'Host')
+            : 'Host';
+        final cleaned = Map<String, dynamic>.from(row)..remove('host');
+        return Meeting.fromJson(cleaned).copyWith(hostName: hostName);
+      }).toList();
+    });
+  }
+
+  @override
+  Future<Result<void>> endMeeting(String meetingId) {
+    return guard(() async {
+      await _client
+          .from('meetings')
+          .update({'status': 'ended'})
+          .eq('id', meetingId);
+    });
+  }
+
+  Map<String, dynamic> _extractMap(dynamic data) {
+    if (data is Map<String, dynamic>) {
+      return data;
+    }
+    if (data is List && data.isNotEmpty && data.first is Map<String, dynamic>) {
+      return data.first as Map<String, dynamic>;
+    }
+    throw const ServerException();
   }
 }
 
@@ -251,5 +335,5 @@ MeetingRepository meetingRepository(Ref ref) {
   if (useMock) {
     return MockMeetingRepository();
   }
-  return RemoteMeetingRepository(ref.watch(dioClientProvider));
+  return SupabaseMeetingRepository(ref.watch(supabaseClientProvider));
 }

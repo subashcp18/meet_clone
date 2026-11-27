@@ -12,7 +12,7 @@ import '../../../../core/widgets/app_error_state.dart';
 import '../../../../core/widgets/app_loading_indicator.dart';
 import '../../../../core/widgets/app_user_avatar.dart';
 import '../../../auth/providers/auth_provider.dart';
-import '../../data/models/meeting_summary.dart';
+import '../../../meeting/data/models/meeting.dart';
 import '../../providers/home_provider.dart';
 import '../widgets/meeting_list_card.dart';
 import '../widgets/new_meeting_sheet.dart';
@@ -36,7 +36,7 @@ class HomeScreen extends ConsumerWidget {
       case _AccountMenuAction.settings:
         await context.pushNamed(RouteNames.settings);
       case _AccountMenuAction.signOut:
-        await ref.read(authProvider.notifier).signOut();
+        await ref.read(authControllerProvider.notifier).signOut();
     }
   }
   // endregion
@@ -45,11 +45,24 @@ class HomeScreen extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final selectedTab = ref.watch(homeTabProvider);
-    final authState = ref.watch(authProvider);
+    final user = ref.watch(authControllerProvider).asData?.value;
     final meetingsAsync = ref.watch(upcomingMeetingsProvider);
     final colors = context.colors;
     final textStyles = context.textStyles;
-    final userEmail = authState.email ?? 'User';
+    final userEmail = user?.email ?? user?.displayName ?? 'User';
+
+    ref.listen<AsyncValue<List<Meeting>>>(upcomingMeetingsProvider, (
+      previous,
+      next,
+    ) {
+      if (next.hasError && !next.isLoading) {
+        ScaffoldMessenger.of(context)
+          ..hideCurrentSnackBar()
+          ..showSnackBar(
+            SnackBar(content: Text(ApiException.friendlyMessage(next.error!))),
+          );
+      }
+    });
 
     return Scaffold(
       appBar: AppBar(
@@ -172,7 +185,7 @@ class _MeetTabView extends StatelessWidget {
     required this.onRefresh,
   });
 
-  final AsyncValue<List<MeetingSummary>> meetingsAsync;
+  final AsyncValue<List<Meeting>> meetingsAsync;
   final VoidCallback onNewMeeting;
   final VoidCallback onJoinWithCode;
   final ValueChanged<String> onJoinMeeting;
@@ -247,7 +260,7 @@ class _CalendarTabView extends StatelessWidget {
     required this.onRefresh,
   });
 
-  final AsyncValue<List<MeetingSummary>> meetingsAsync;
+  final AsyncValue<List<Meeting>> meetingsAsync;
   final VoidCallback onSchedule;
   final ValueChanged<String> onJoinMeeting;
   final Future<void> Function() onRefresh;
@@ -302,7 +315,7 @@ class _MeetingsListView extends StatelessWidget {
     required this.onRefresh,
   });
 
-  final AsyncValue<List<MeetingSummary>> meetingsAsync;
+  final AsyncValue<List<Meeting>> meetingsAsync;
   final String emptyTitle;
   final String emptySubtitle;
   final ValueChanged<String> onJoinMeeting;
@@ -315,11 +328,8 @@ class _MeetingsListView extends StatelessWidget {
         message: 'Loading meetings...',
       ),
       error: (error, _) {
-        final message = error is ApiException
-            ? error.message
-            : 'Unable to load upcoming meetings.';
         return AppErrorState(
-          message: message,
+          message: ApiException.friendlyMessage(error),
           onRetry: onRefresh,
         );
       },

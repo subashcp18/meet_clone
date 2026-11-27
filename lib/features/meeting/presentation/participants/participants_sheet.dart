@@ -6,7 +6,7 @@ import '../../../../core/theme/app_theme.dart';
 import '../../../../core/utils/extensions.dart';
 import '../../../../core/widgets/app_empty_state.dart';
 import '../../../../core/widgets/app_user_avatar.dart';
-import '../../data/models/participant_model.dart';
+import '../../data/models/meeting_participant.dart';
 import '../../providers/meeting_session_provider.dart';
 
 enum _ParticipantMenuAction { mute, remove }
@@ -56,7 +56,7 @@ class _ParticipantsSheetState extends ConsumerState<ParticipantsSheet> {
   }
 
   Future<void> _handleAction(
-    ParticipantModel participant,
+    MeetingParticipant participant,
     _ParticipantMenuAction action,
   ) async {
     final notifier = ref.read(meetingSessionProvider.notifier);
@@ -215,7 +215,7 @@ class _ParticipantRow extends StatelessWidget {
     required this.onSelected,
   });
 
-  final ParticipantModel participant;
+  final MeetingParticipant participant;
   final ValueChanged<_ParticipantMenuAction> onSelected;
 
   @override
