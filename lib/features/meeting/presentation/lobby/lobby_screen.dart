@@ -12,9 +12,10 @@ import '../../../../core/widgets/media_toggle_button.dart';
 import '../../../auth/providers/auth_provider.dart';
 import '../../data/models/meeting.dart';
 import '../../data/models/meeting_participant.dart';
+import '../../data/models/meeting_preview.dart';
 import '../../providers/meeting_session_provider.dart';
 
-class LobbyScreen extends ConsumerWidget {
+class LobbyScreen extends ConsumerStatefulWidget {
   const LobbyScreen({
     super.key,
     required this.code,
@@ -22,34 +23,104 @@ class LobbyScreen extends ConsumerWidget {
 
   final String code;
 
-  // region: ACTIONS
-  Future<void> _joinNow(
-    BuildContext context,
-    WidgetRef ref,
-    String title,
-  ) async {
-    final success = await ref
-        .read(meetingSessionProvider.notifier)
-        .joinMeeting(code: code, title: title);
-    if (!context.mounted) {
-      return;
-    }
-    if (!success) {
-      final error = ref.read(meetingSessionProvider).errorMessage;
-      if (error != null) {
-        ScaffoldMessenger.of(context)
-          ..hideCurrentSnackBar()
-          ..showSnackBar(SnackBar(content: Text(error)));
+  @override
+  ConsumerState<LobbyScreen> createState() => _LobbyScreenState();
+}
+
+class _LobbyScreenState extends ConsumerState<LobbyScreen> {
+  // region: STATE & LIFECYCLE
+  bool _isWaitingInLobby = false;
+  bool _isJoiningAsHost = false;
+  bool _hostCancelled = false;
+  String? _inlineError;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) {
+        return;
       }
+      ref.read(meetingSessionProvider.notifier).clearJoinError();
+      ref.invalidate(meetingPreviewProvider(widget.code));
+    });
+  }
+  // endregion
+
+  // region: ACTIONS
+  Future<void> _requestOrJoin(String title, {required bool isHost}) async {
+    setState(() {
+      _inlineError = null;
+      _hostCancelled = false;
+      _isJoiningAsHost = isHost;
+      _isWaitingInLobby = !isHost;
+    });
+
+    final status = await ref
+        .read(meetingSessionProvider.notifier)
+        .requestJoin(code: widget.code, title: title);
+
+    if (!mounted) {
       return;
     }
-    context.pushReplacement(RouteNames.meetingLocation(code));
+
+    if (isHost && _hostCancelled) {
+      await ref.read(meetingSessionProvider.notifier).leaveCall();
+      return;
+    }
+
+    if (status == null) {
+      final error = ref.read(meetingSessionProvider).errorMessage;
+      setState(() {
+        _isJoiningAsHost = false;
+        _isWaitingInLobby = false;
+        _inlineError = error ?? UnknownException.defaultMessage;
+      });
+      return;
+    }
+
+    if (status == 'admitted') {
+      setState(() {
+        _isJoiningAsHost = false;
+        _isWaitingInLobby = false;
+      });
+      context.pushReplacement(RouteNames.meetingLocation(widget.code));
+      return;
+    }
+
+    setState(() {
+      _isJoiningAsHost = false;
+      _isWaitingInLobby = true;
+    });
   }
 
-  Future<void> _showDeviceSettingsSheet(
-    BuildContext context,
-    WidgetRef ref,
-  ) {
+  Future<void> _cancelJoin() async {
+    if (_isJoiningAsHost) {
+      setState(() {
+        _hostCancelled = true;
+        _isJoiningAsHost = false;
+      });
+      return;
+    }
+    if (_isWaitingInLobby) {
+      setState(() {
+        _isWaitingInLobby = false;
+      });
+      await ref.read(meetingSessionProvider.notifier).cancelJoinRequest();
+    }
+  }
+
+  Future<void> _enterAdmittedCall(String meetingId) async {
+    await ref
+        .read(meetingSessionProvider.notifier)
+        .activateAdmittedCall(meetingId);
+    if (!mounted) {
+      return;
+    }
+    context.pushReplacement(RouteNames.meetingLocation(widget.code));
+  }
+
+  Future<void> _showDeviceSettingsSheet() {
     return showModalBottomSheet<void>(
       context: context,
       builder: (_) => _DeviceSettingsSheet(
@@ -66,112 +137,221 @@ class LobbyScreen extends ConsumerWidget {
 
   // region: BUILD
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  Widget build(BuildContext context) {
     final session = ref.watch(meetingSessionProvider);
-    final lobbyAsync = ref.watch(joinMeetingProvider(code));
+    final previewAsync = ref.watch(meetingPreviewProvider(widget.code));
     final authUser = ref.watch(authControllerProvider).asData?.value;
     final authEmail = authUser?.email ?? authUser?.displayName ?? 'You';
     final colors = context.colors;
     final colorScheme = context.colorScheme;
     final textStyles = context.textStyles;
 
-    final meetingTitle = lobbyAsync.asData?.value.title ?? 'Meeting';
+    if (_isWaitingInLobby && session.meetingId.isNotEmpty) {
+      ref.listen<AsyncValue<MeetingParticipant?>>(
+        myParticipantRowProvider(session.meetingId),
+        (_, next) {
+          final row = next.asData?.value;
+          if (!_isWaitingInLobby || row == null) {
+            return;
+          }
+          if (row.isAdmitted) {
+            setState(() => _isWaitingInLobby = false);
+            _enterAdmittedCall(session.meetingId);
+          } else if (row.isDenied) {
+            setState(() {
+              _isWaitingInLobby = false;
+              _inlineError = 'The host denied your request';
+            });
+          }
+        },
+      );
 
-    return Scaffold(
-      appBar: AppBar(
-        title: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              meetingTitle,
-              style: textStyles.titleMedium,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
+      ref.listen<AsyncValue<Meeting?>>(
+        meetingStatusProvider(session.meetingId),
+        (_, next) {
+          final liveMeeting = next.asData?.value;
+          if (_isWaitingInLobby && liveMeeting != null && liveMeeting.isEnded) {
+            setState(() {
+              _isWaitingInLobby = false;
+            });
+            ref.invalidate(meetingPreviewProvider(widget.code));
+          }
+        },
+      );
+    }
+
+    final preview = previewAsync.asData?.value;
+    final meetingTitle = preview?.title ?? 'Meeting';
+    final isHost =
+        preview != null && authUser != null && preview.hostId == authUser.id;
+    final isBusyJoining = _isJoiningAsHost || _isWaitingInLobby;
+    final previewError = previewAsync.hasError
+        ? ApiException.friendlyMessage(previewAsync.error!)
+        : null;
+    final isEndedError = previewError == 'This meeting has ended.';
+
+    return PopScope(
+      canPop: !isBusyJoining,
+      onPopInvokedWithResult: (didPop, _) {
+        if (!didPop && isBusyJoining) {
+          _cancelJoin();
+        }
+      },
+      child: Scaffold(
+        appBar: AppBar(
+          title: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                meetingTitle,
+                style: textStyles.titleMedium,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ),
+              Text(
+                widget.code,
+                style: textStyles.caption,
+              ),
+            ],
+          ),
+          actions: [
+            IconButton(
+              onPressed: () =>
+                  ref.read(meetingSessionProvider.notifier).toggleCameraFacing(),
+              tooltip: session.isFrontCamera
+                  ? 'Switch to rear camera'
+                  : 'Switch to front camera',
+              icon: const Icon(Icons.cameraswitch_outlined),
             ),
-            Text(
-              code,
-              style: textStyles.caption,
+            IconButton(
+              onPressed: _showDeviceSettingsSheet,
+              tooltip: 'Device settings',
+              icon: const Icon(Icons.tune_rounded),
             ),
           ],
         ),
-        actions: [
-          IconButton(
-            onPressed: () =>
-                ref.read(meetingSessionProvider.notifier).toggleCameraFacing(),
-            tooltip: session.isFrontCamera
-                ? 'Switch to rear camera'
-                : 'Switch to front camera',
-            icon: const Icon(Icons.cameraswitch_outlined),
-          ),
-          IconButton(
-            onPressed: () => _showDeviceSettingsSheet(context, ref),
-            tooltip: 'Device settings',
-            icon: const Icon(Icons.tune_rounded),
-          ),
-        ],
-      ),
-      body: SafeArea(
-        child: SingleChildScrollView(
-          padding: const EdgeInsets.fromLTRB(20, 12, 20, 24),
-          child: Center(
-            child: ConstrainedBox(
-              constraints: const BoxConstraints(maxWidth: 460),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  _CameraPreviewPlaceholder(
-                    userEmail: authEmail,
-                    isMicOn: session.isMicOn,
-                    isCameraOn: session.isCameraOn,
-                    isFrontCamera: session.isFrontCamera,
-                    onToggleMic: () =>
-                        ref.read(meetingSessionProvider.notifier).toggleMic(),
-                    onToggleCamera: () =>
-                        ref.read(meetingSessionProvider.notifier).toggleCamera(),
-                  ),
-                  const SizedBox(height: 16),
-                  _DeviceSettingsStrip(
-                    audioOutput: session.audioOutput,
-                    isFrontCamera: session.isFrontCamera,
-                    onTapAudio: () => _showDeviceSettingsSheet(context, ref),
-                    onTapCameraSwitch: () => ref
-                        .read(meetingSessionProvider.notifier)
-                        .toggleCameraFacing(),
-                  ),
-                  const SizedBox(height: 20),
-                  _LobbyParticipantsSection(
-                    lobbyAsync: lobbyAsync,
-                    onRetry: () => ref.invalidate(joinMeetingProvider(code)),
-                  ),
-                  if (session.errorMessage != null) ...[
-                    const SizedBox(height: 16),
-                    AppErrorBanner(message: session.errorMessage!),
-                  ],
-                  const SizedBox(height: 24),
-                  SizedBox(
-                    height: 52,
-                    child: ElevatedButton.icon(
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: colors.joinGreen,
-                        foregroundColor: colorScheme.onSecondary,
-                      ),
-                      onPressed: session.isJoining
-                          ? null
-                          : () => _joinNow(context, ref, meetingTitle),
-                      icon: session.isJoining
-                          ? SizedBox(
-                              width: 18,
-                              height: 18,
-                              child: CircularProgressIndicator(
-                                strokeWidth: 2,
-                                color: colorScheme.onSecondary,
+        body: SafeArea(
+          child: SingleChildScrollView(
+            padding: const EdgeInsets.fromLTRB(20, 12, 20, 24),
+            child: Center(
+              child: ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 460),
+                child: isEndedError
+                    ? Column(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
+                          const SizedBox(height: 36),
+                          Icon(
+                            Icons.event_busy_rounded,
+                            size: 56,
+                            color: colors.onSurfaceVariant,
+                          ),
+                          const SizedBox(height: 16),
+                          Text(
+                            'This meeting has ended',
+                            style: textStyles.titleLarge,
+                            textAlign: TextAlign.center,
+                          ),
+                          const SizedBox(height: 8),
+                          Text(
+                            widget.code,
+                            style: textStyles.caption,
+                            textAlign: TextAlign.center,
+                          ),
+                          const SizedBox(height: 24),
+                          ElevatedButton(
+                            onPressed: () => context.goNamed(RouteNames.home),
+                            child: const Text('Back to Home'),
+                          ),
+                        ],
+                      )
+                    : Column(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
+                          if (preview != null &&
+                              !preview.hostInCall &&
+                              !isHost) ...[
+                            Text(
+                              "The host hasn't joined yet",
+                              style: textStyles.bodyMedium.copyWith(
+                                color: colors.onSurfaceVariant,
+                              ),
+                              textAlign: TextAlign.center,
+                            ),
+                            const SizedBox(height: 12),
+                          ],
+                          _CameraPreviewPlaceholder(
+                            userEmail: authEmail,
+                            isMicOn: session.isMicOn,
+                            isCameraOn: session.isCameraOn,
+                            isFrontCamera: session.isFrontCamera,
+                            overlayText: _isJoiningAsHost
+                                ? 'Joining the meeting...'
+                                : _isWaitingInLobby
+                                ? 'Asking to join. Waiting for the host to let you in...'
+                                : null,
+                            onToggleMic: () => ref
+                                .read(meetingSessionProvider.notifier)
+                                .toggleMic(),
+                            onToggleCamera: () => ref
+                                .read(meetingSessionProvider.notifier)
+                                .toggleCamera(),
+                          ),
+                          const SizedBox(height: 16),
+                          _DeviceSettingsStrip(
+                            audioOutput: session.audioOutput,
+                            isFrontCamera: session.isFrontCamera,
+                            onTapAudio: _showDeviceSettingsSheet,
+                            onTapCameraSwitch: () => ref
+                                .read(meetingSessionProvider.notifier)
+                                .toggleCameraFacing(),
+                          ),
+                          const SizedBox(height: 20),
+                          _LobbyParticipantsSection(
+                            previewAsync: previewAsync,
+                            onRetry: () => ref.invalidate(
+                              meetingPreviewProvider(widget.code),
+                            ),
+                          ),
+                          if (_inlineError != null) ...[
+                            const SizedBox(height: 16),
+                            AppErrorBanner(message: _inlineError!),
+                          ],
+                          const SizedBox(height: 24),
+                          if (isBusyJoining)
+                            SizedBox(
+                              height: 52,
+                              child: OutlinedButton(
+                                onPressed: _cancelJoin,
+                                child: const Text('Cancel'),
                               ),
                             )
-                          : const Icon(Icons.videocam_rounded, size: 20),
-                      label: Text(session.isJoining ? 'Joining...' : 'Join now'),
-                    ),
-                  ),
-                ],
+                          else
+                            SizedBox(
+                              height: 52,
+                              child: ElevatedButton.icon(
+                                style: ElevatedButton.styleFrom(
+                                  backgroundColor: colors.joinGreen,
+                                  foregroundColor: colorScheme.onSecondary,
+                                ),
+                                onPressed: previewAsync.hasError ||
+                                        previewAsync.isLoading
+                                    ? null
+                                    : () => _requestOrJoin(
+                                          meetingTitle,
+                                          isHost: isHost,
+                                        ),
+                                icon: const Icon(
+                                  Icons.videocam_rounded,
+                                  size: 20,
+                                ),
+                                label: Text(
+                                  isHost ? 'Join now' : 'Ask to join',
+                                ),
+                              ),
+                            ),
+                        ],
+                      ),
               ),
             ),
           ),
@@ -190,6 +370,7 @@ class _CameraPreviewPlaceholder extends StatelessWidget {
     required this.isFrontCamera,
     required this.onToggleMic,
     required this.onToggleCamera,
+    this.overlayText,
   });
 
   final String userEmail;
@@ -198,6 +379,7 @@ class _CameraPreviewPlaceholder extends StatelessWidget {
   final bool isFrontCamera;
   final VoidCallback onToggleMic;
   final VoidCallback onToggleCamera;
+  final String? overlayText;
 
   @override
   Widget build(BuildContext context) {
@@ -208,6 +390,7 @@ class _CameraPreviewPlaceholder extends StatelessWidget {
     return AspectRatio(
       aspectRatio: 3 / 4,
       child: Container(
+        clipBehavior: Clip.antiAlias,
         decoration: BoxDecoration(
           color: isCameraOn
               ? colors.tileSurface
@@ -245,6 +428,29 @@ class _CameraPreviewPlaceholder extends StatelessWidget {
                 ],
               ),
             ),
+            if (overlayText != null)
+              Positioned.fill(
+                child: Container(
+                  color: colors.callBackground.withValues(alpha: 0.62),
+                  padding: const EdgeInsets.symmetric(horizontal: 24),
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      CircularProgressIndicator(
+                        color: colorScheme.onPrimary,
+                      ),
+                      const SizedBox(height: 16),
+                      Text(
+                        overlayText!,
+                        style: textStyles.bodyMedium.copyWith(
+                          color: colorScheme.onPrimary,
+                        ),
+                        textAlign: TextAlign.center,
+                      ),
+                    ],
+                  ),
+                ),
+              ),
             Positioned(
               left: 16,
               right: 16,
@@ -256,7 +462,9 @@ class _CameraPreviewPlaceholder extends StatelessWidget {
                     isActive: isMicOn,
                     activeIcon: Icons.mic_rounded,
                     inactiveIcon: Icons.mic_off_rounded,
-                    tooltip: isMicOn ? 'Turn off microphone' : 'Turn on microphone',
+                    tooltip: isMicOn
+                        ? 'Turn off microphone'
+                        : 'Turn on microphone',
                     onPressed: onToggleMic,
                   ),
                   const SizedBox(width: 20),
@@ -320,11 +528,11 @@ class _DeviceSettingsStrip extends StatelessWidget {
 
 class _LobbyParticipantsSection extends StatelessWidget {
   const _LobbyParticipantsSection({
-    required this.lobbyAsync,
+    required this.previewAsync,
     required this.onRetry,
   });
 
-  final AsyncValue<Meeting> lobbyAsync;
+  final AsyncValue<MeetingPreview> previewAsync;
   final VoidCallback onRetry;
 
   @override
@@ -332,7 +540,7 @@ class _LobbyParticipantsSection extends StatelessWidget {
     final colors = context.colors;
     final textStyles = context.textStyles;
 
-    return lobbyAsync.when(
+    return previewAsync.when(
       loading: () => const Padding(
         padding: EdgeInsets.symmetric(vertical: 12),
         child: AppLoadingIndicator(size: 20),
@@ -349,8 +557,8 @@ class _LobbyParticipantsSection extends StatelessWidget {
           ],
         );
       },
-      data: (meeting) {
-        final participants = meeting.participants;
+      data: (preview) {
+        final participants = preview.previewParticipants;
         if (participants.isEmpty) {
           return Text(
             'No one else is here yet',
@@ -377,23 +585,23 @@ class _LobbyParticipantsSection extends StatelessWidget {
     );
   }
 
-  String _summaryText(List<MeetingParticipant> participants) {
+  String _summaryText(List<MeetingPreviewParticipant> participants) {
     if (participants.length == 1) {
-      return '${participants.first.name} is in this call';
+      return '${participants.first.displayName} is in this call';
     }
     if (participants.length == 2) {
-      return '${participants[0].name} and ${participants[1].name} are in this call';
+      return '${participants[0].displayName} and ${participants[1].displayName} are in this call';
     }
     final remaining = participants.length - 2;
     final suffix = remaining == 1 ? 'other' : 'others';
-    return '${participants[0].name}, ${participants[1].name}, and $remaining $suffix are in this call';
+    return '${participants[0].displayName}, ${participants[1].displayName}, and $remaining $suffix are in this call';
   }
 }
 
 class _AvatarStack extends StatelessWidget {
   const _AvatarStack({required this.participants});
 
-  final List<MeetingParticipant> participants;
+  final List<MeetingPreviewParticipant> participants;
 
   @override
   Widget build(BuildContext context) {
@@ -405,7 +613,7 @@ class _AvatarStack extends StatelessWidget {
           Padding(
             padding: EdgeInsets.only(left: i == 0 ? 0 : 6),
             child: AppUserAvatar(
-              nameOrEmail: visible[i].name,
+              nameOrEmail: visible[i].displayName,
               radius: 18,
             ),
           ),

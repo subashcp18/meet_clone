@@ -107,20 +107,29 @@ sealed class ApiException implements Exception {
         statusCode: 404,
       );
     }
-    if (normalized.contains('meeting not found')) {
+    if (normalized.contains('meeting_not_found') ||
+        normalized.contains('meeting not found')) {
       return const ServerException(
         message: 'Meeting not found. Check the code and try again.',
         statusCode: 404,
       );
     }
-    if (normalized.contains('meeting ended')) {
+    if (normalized.contains('meeting_ended') ||
+        normalized.contains('meeting ended')) {
       return const ValidationException(
-        message: 'This meeting has already ended.',
+        message: 'This meeting has ended.',
       );
     }
-    if (normalized.contains('meeting full')) {
+    if (normalized.contains('meeting_full') ||
+        normalized.contains('meeting full')) {
       return const ValidationException(
         message: 'This meeting is full (maximum 5 participants).',
+      );
+    }
+    if (normalized.contains('not_host') || normalized.contains('not host')) {
+      return const UnauthorizedException(
+        message: 'Only the host can do that.',
+        statusCode: 403,
       );
     }
     if (normalized.contains('not signed in')) {

@@ -9,6 +9,7 @@ import '../../../../core/widgets/app_error_banner.dart';
 import '../../../../core/widgets/app_sheet_action_tile.dart';
 import '../../../meeting/data/models/meeting.dart';
 import '../../../meeting/data/repositories/meeting_repository.dart';
+import '../../providers/home_provider.dart';
 
 enum _PendingAction { instant, link }
 
@@ -52,6 +53,7 @@ class _NewMeetingSheetState extends ConsumerState<NewMeetingSheet> {
 
     result.when(
       success: (meeting) {
+        ref.invalidate(upcomingMeetingsProvider);
         setState(() {
           _pendingAction = null;
           _generatedMeeting = meeting;
@@ -84,6 +86,7 @@ class _NewMeetingSheetState extends ConsumerState<NewMeetingSheet> {
 
     result.when(
       success: (meeting) {
+        ref.invalidate(upcomingMeetingsProvider);
         final router = GoRouter.of(context);
         Navigator.of(context).pop();
         router.push(RouteNames.lobbyLocation(meeting.code));

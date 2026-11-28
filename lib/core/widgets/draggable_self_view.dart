@@ -156,9 +156,9 @@ class _DraggableSelfViewState extends State<DraggableSelfView> {
         child: Container(
           decoration: BoxDecoration(
             borderRadius: BorderRadius.circular(16),
-            border: Border.all(
-              color: colors.outline.withValues(alpha: 0.45),
-            ),
+            // border: Border.all(
+            //   color: colors.outline.withValues(alpha: 0.45),
+            // ),
             boxShadow: [
               BoxShadow(
                 color: colorScheme.scrim.withValues(alpha: 0.4),

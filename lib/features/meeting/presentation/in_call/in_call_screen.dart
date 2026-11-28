@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -12,8 +14,10 @@ import '../../../../core/widgets/app_error_state.dart';
 import '../../../../core/widgets/app_loading_indicator.dart';
 import '../../../../core/widgets/app_sheet_action_tile.dart';
 import '../../../../core/widgets/app_status_pill.dart';
+import '../../../../core/widgets/app_user_avatar.dart';
 import '../../../../core/widgets/draggable_self_view.dart';
 import '../../../../core/widgets/media_toggle_button.dart';
+import '../../data/models/meeting.dart';
 import '../../data/models/meeting_participant.dart';
 import '../../providers/in_call_ui_provider.dart';
 import '../../providers/meeting_session_provider.dart';
@@ -43,9 +47,20 @@ class _InCallScreenState extends ConsumerState<InCallScreen> {
   static const double _landscapeTopOverlayHeight = 52;
   static const double _snapMargin = 12;
 
+  Timer? _heartbeatTimer;
+  MeetingSessionNotifier? _sessionNotifier;
+  String _activeMeetingId = '';
+  bool _didExitCall = false;
+
   @override
   void initState() {
     super.initState();
+    _sessionNotifier = ref.read(meetingSessionProvider.notifier);
+    _heartbeatTimer = Timer.periodic(const Duration(seconds: 30), (_) {
+      if (mounted && !_didExitCall) {
+        ref.read(meetingSessionProvider.notifier).sendHeartbeat();
+      }
+    });
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) {
         return;
@@ -56,13 +71,66 @@ class _InCallScreenState extends ConsumerState<InCallScreen> {
 
   @override
   void dispose() {
+    _heartbeatTimer?.cancel();
+    _heartbeatTimer = null;
+    if (!_didExitCall && _activeMeetingId.isNotEmpty) {
+      _sessionNotifier?.leaveSilentlyIfActive(_activeMeetingId);
+    }
     SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
     super.dispose();
   }
   // endregion
 
   // region: ACTIONS
-  Future<void> _endCall() async {
+  Future<void> _handleEndCallPressed(MeetingSessionState session) async {
+    if (session.isHost) {
+      final choice = await _openModalKeepControls(
+        () => showDialog<String>(
+          context: context,
+          barrierDismissible: true,
+          builder: (dialogContext) => Theme(
+            data: AppTheme.callTheme,
+            child: AlertDialog(
+              title: const Text('End this meeting?'),
+              content: const Text(
+                'Ending closes the meeting for everyone. '
+                'If you just leave, the meeting stays open and you can rejoin from Home.',
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.of(dialogContext).pop('leave'),
+                  child: const Text('Just leave'),
+                ),
+                ElevatedButton(
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: dialogContext.colors.endCallRed,
+                    foregroundColor: dialogContext.colorScheme.onError,
+                  ),
+                  onPressed: () => Navigator.of(dialogContext).pop('end'),
+                  child: const Text('End meeting'),
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
+      if (!mounted) {
+        return;
+      }
+      if (choice == 'end') {
+        await _endForEveryone();
+      } else if (choice == 'leave') {
+        await _leaveCall();
+      }
+      return;
+    }
+
+    await _leaveCall();
+  }
+
+  Future<void> _leaveCall() async {
+    _didExitCall = true;
+    _heartbeatTimer?.cancel();
     await SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
     await ref.read(meetingSessionProvider.notifier).leaveCall();
     if (!mounted) {
@@ -71,16 +139,152 @@ class _InCallScreenState extends ConsumerState<InCallScreen> {
     context.goNamed(RouteNames.home);
   }
 
-  Future<void> _openModalKeepControls(Future<void> Function() openSheet) async {
+  Future<void> _endForEveryone() async {
+    _didExitCall = true;
+    _heartbeatTimer?.cancel();
+    await SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
+    await ref.read(meetingSessionProvider.notifier).endCall();
+    if (!mounted) {
+      return;
+    }
+    context.goNamed(RouteNames.home);
+  }
+
+  void _exitWithBanner(String message) {
+    _didExitCall = true;
+    _heartbeatTimer?.cancel();
+    SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
+    ref.read(meetingSessionProvider.notifier).clearAfterRemoteEnd();
+    if (!mounted) {
+      return;
+    }
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(SnackBar(content: Text(message)));
+    context.goNamed(RouteNames.home);
+  }
+
+  Future<void> _admit(String userId) async {
+    final error = await ref
+        .read(meetingSessionProvider.notifier)
+        .admitParticipant(userId);
+    if (!mounted || error == null) {
+      return;
+    }
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(SnackBar(content: Text(error)));
+  }
+
+  Future<void> _deny(String userId) async {
+    final error = await ref
+        .read(meetingSessionProvider.notifier)
+        .denyParticipant(userId);
+    if (!mounted || error == null) {
+      return;
+    }
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(SnackBar(content: Text(error)));
+  }
+
+  Future<void> _admitAll() async {
+    final error = await ref
+        .read(meetingSessionProvider.notifier)
+        .admitAllWaiting();
+    if (!mounted || error == null) {
+      return;
+    }
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(SnackBar(content: Text(error)));
+  }
+
+  Future<T?> _openModalKeepControls<T>(Future<T?> Function() openModal) async {
     final uiController = ref.read(inCallUiControllerProvider.notifier);
     uiController.keepVisible(true);
     try {
-      await openSheet();
+      return await openModal();
     } finally {
       if (mounted) {
         ref.read(inCallUiControllerProvider.notifier).keepVisible(false);
       }
     }
+  }
+
+  Future<void> _showWaitingRequestsSheet() {
+    return _openModalKeepControls(() {
+      return showModalBottomSheet<void>(
+        context: context,
+        builder: (sheetContext) => Theme(
+          data: AppTheme.callTheme,
+          child: Consumer(
+            builder: (context, sheetRef, _) {
+              final waiting = sheetRef.watch(
+                meetingSessionProvider.select((s) => s.waitingRequests),
+              );
+              final textStyles = context.textStyles;
+
+              if (waiting.isEmpty) {
+                WidgetsBinding.instance.addPostFrameCallback((_) {
+                  if (Navigator.of(sheetContext).canPop()) {
+                    Navigator.of(sheetContext).pop();
+                  }
+                });
+              }
+
+              return SafeArea(
+                child: Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 0, 16, 24),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      Row(
+                        children: [
+                          Expanded(
+                            child: Text(
+                              'Waiting to join (${waiting.length})',
+                              style: textStyles.titleMedium,
+                            ),
+                          ),
+                          if (waiting.length > 1)
+                            TextButton(
+                              onPressed: _admitAll,
+                              child: const Text('Admit all'),
+                            ),
+                        ],
+                      ),
+                      const SizedBox(height: 8),
+                      for (final person in waiting)
+                        ListTile(
+                          contentPadding: EdgeInsets.zero,
+                          leading: AppUserAvatar(nameOrEmail: person.name),
+                          title: Text(person.name, style: textStyles.titleSmall),
+                          trailing: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              TextButton(
+                                onPressed: () => _deny(person.userId),
+                                child: const Text('Deny'),
+                              ),
+                              const SizedBox(width: 4),
+                              FilledButton(
+                                onPressed: () => _admit(person.userId),
+                                child: const Text('Admit'),
+                              ),
+                            ],
+                          ),
+                        ),
+                    ],
+                  ),
+                ),
+              );
+            },
+          ),
+        ),
+      );
+    });
   }
 
   Future<void> _showAudioOutputSheet() {
@@ -147,6 +351,7 @@ class _InCallScreenState extends ConsumerState<InCallScreen> {
   }
 
   Future<void> _showMoreOptionsSheet(MeetingSessionState session) {
+    final waitingCount = session.isHost ? session.waitingRequests.length : 0;
     return _openModalKeepControls(() {
       return showModalBottomSheet<void>(
         context: context,
@@ -174,7 +379,9 @@ class _InCallScreenState extends ConsumerState<InCallScreen> {
                     AppSheetActionTile(
                       icon: Icons.people_outline_rounded,
                       title: 'Participants (${session.participants.length})',
-                      subtitle: 'View and manage attendees',
+                      subtitle: waitingCount > 0
+                          ? '$waitingCount waiting to join'
+                          : 'View and manage attendees',
                       onTap: () {
                         Navigator.of(sheetContext).pop();
                         _openModalKeepControls(
@@ -283,8 +490,10 @@ class _InCallScreenState extends ConsumerState<InCallScreen> {
   @override
   Widget build(BuildContext context) {
     final session = ref.watch(meetingSessionProvider);
+    _activeMeetingId = session.meetingId;
     final uiState = ref.watch(inCallUiControllerProvider);
     final selfCorner = ref.watch(selfViewPositionControllerProvider);
+    final pinnedUserId = ref.watch(pinnedParticipantControllerProvider);
     final uiNotifier = ref.read(inCallUiControllerProvider.notifier);
 
     ref.listen<bool>(
@@ -295,6 +504,53 @@ class _InCallScreenState extends ConsumerState<InCallScreen> {
         );
       },
     );
+
+    ref.listen<int>(
+      meetingSessionProvider.select((s) => s.waitingRequests.length),
+      (previous, next) {
+        if (session.isHost && next > (previous ?? 0)) {
+          uiNotifier.show();
+        }
+      },
+    );
+
+    if (session.meetingId.isNotEmpty) {
+      ref.listen<AsyncValue<Meeting?>>(
+        meetingStatusProvider(session.meetingId),
+        (_, next) {
+          final liveMeeting = next.asData?.value;
+          if (liveMeeting != null && liveMeeting.isEnded && !_didExitCall) {
+            _exitWithBanner('The host ended the meeting');
+          }
+        },
+      );
+
+      ref.listen<AsyncValue<MeetingParticipant?>>(
+        myParticipantRowProvider(session.meetingId),
+        (previous, next) {
+          final prevRow = previous?.asData?.value;
+          final nextRow = next.asData?.value;
+          if (nextRow == null || _didExitCall) {
+            return;
+          }
+          if (nextRow.isMuted &&
+              prevRow?.isMuted != true &&
+              ref.read(meetingSessionProvider).isMicOn) {
+            ref.read(meetingSessionProvider.notifier).applyRemoteMute();
+            if (mounted) {
+              ScaffoldMessenger.of(context)
+                ..hideCurrentSnackBar()
+                ..showSnackBar(
+                  const SnackBar(content: Text('The host muted you')),
+                );
+            }
+          }
+          if (nextRow.isDenied && (prevRow?.isAdmitted ?? true)) {
+            _exitWithBanner('You were removed from the meeting');
+          }
+        },
+      );
+    }
 
     final isAlone = session.participants.length <= 1;
     WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -316,8 +572,24 @@ class _InCallScreenState extends ConsumerState<InCallScreen> {
     final remoteParticipants = session.participants
         .where((p) => !p.isSelf)
         .toList();
+    final pinnedParticipant = pinnedUserId == null
+        ? null
+        : remoteParticipants.where((p) => p.userId == pinnedUserId).firstOrNull;
+
+    if (pinnedUserId != null && pinnedParticipant == null) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) {
+          ref.read(pinnedParticipantControllerProvider.notifier).unpin();
+        }
+      });
+    }
+
     final showFloatingSelf =
         selfParticipant != null && remoteParticipants.isNotEmpty;
+    final waitingRequests = session.isHost
+        ? session.waitingRequests
+        : const <MeetingParticipant>[];
+    final waitingCount = waitingRequests.length;
 
     final meetingTitle = session.title.isNotEmpty
         ? session.title
@@ -379,7 +651,17 @@ class _InCallScreenState extends ConsumerState<InCallScreen> {
                           child: _CallStage(
                             session: session,
                             remoteParticipants: remoteParticipants,
+                            pinnedParticipant: pinnedParticipant,
+                            showTileMenu: controlsVisible,
                             isLandscape: isLandscape,
+                            onTogglePin: (userId) => ref
+                                .read(
+                                  pinnedParticipantControllerProvider.notifier,
+                                )
+                                .toggle(userId),
+                            onTileMenuOpened: () => uiNotifier.keepVisible(true),
+                            onTileMenuClosed: () =>
+                                uiNotifier.keepVisible(false),
                             onRetryJoin: () => ref
                                 .read(meetingSessionProvider.notifier)
                                 .ensureJoined(widget.code),
@@ -411,6 +693,23 @@ class _InCallScreenState extends ConsumerState<InCallScreen> {
                               .togglePresenting(),
                         ),
                       ),
+                    ),
+                  if (waitingRequests.isNotEmpty)
+                    _WaitingRequestsBanner(
+                      waitingRequests: waitingRequests,
+                      visible: controlsVisible,
+                      duration: _animDuration,
+                      curve: _animCurve,
+                      topOffset: safePadding.top +
+                          (isLandscape
+                              ? _landscapeTopOverlayHeight + 4
+                              : _portraitTopBarHeight + 4),
+                      rightInset: safePadding.right +
+                          (isLandscape ? _landscapeRightRailWidth + 12 : 16),
+                      leftInset: safePadding.left + 16,
+                      onAdmit: _admit,
+                      onDeny: _deny,
+                      onOpenSheet: _showWaitingRequestsSheet,
                     ),
                   if (showFloatingSelf)
                     DraggableSelfView(
@@ -444,6 +743,7 @@ class _InCallScreenState extends ConsumerState<InCallScreen> {
                       isCameraOn: session.isCameraOn,
                       isPresenting: session.isPresenting,
                       isHandRaised: session.isHandRaised,
+                      waitingBadgeCount: waitingCount,
                       onToggleMic: () => ref
                           .read(meetingSessionProvider.notifier)
                           .toggleMic(),
@@ -457,13 +757,14 @@ class _InCallScreenState extends ConsumerState<InCallScreen> {
                           .read(meetingSessionProvider.notifier)
                           .toggleHandRaised(),
                       onMore: () => _showMoreOptionsSheet(session),
-                      onEndCall: _endCall,
+                      onEndCall: () => _handleEndCallPressed(session),
                     ),
                   ] else ...[
                     _PortraitTopBarOverlay(
                       title: meetingTitle,
                       elapsed: uiState.elapsed,
                       participantCount: session.participants.length,
+                      waitingBadgeCount: waitingCount,
                       isFrontCamera: session.isFrontCamera,
                       audioIcon: _audioIcon(session.audioOutput),
                       audioTooltip: session.audioOutput.label,
@@ -486,6 +787,7 @@ class _InCallScreenState extends ConsumerState<InCallScreen> {
                       isCameraOn: session.isCameraOn,
                       isPresenting: session.isPresenting,
                       isHandRaised: session.isHandRaised,
+                      waitingBadgeCount: waitingCount,
                       onToggleMic: () => ref
                           .read(meetingSessionProvider.notifier)
                           .toggleMic(),
@@ -499,7 +801,7 @@ class _InCallScreenState extends ConsumerState<InCallScreen> {
                           .read(meetingSessionProvider.notifier)
                           .toggleHandRaised(),
                       onMore: () => _showMoreOptionsSheet(session),
-                      onEndCall: _endCall,
+                      onEndCall: () => _handleEndCallPressed(session),
                     ),
                   ],
                 ],
@@ -513,11 +815,121 @@ class _InCallScreenState extends ConsumerState<InCallScreen> {
   // endregion
 }
 
+class _WaitingRequestsBanner extends StatelessWidget {
+  const _WaitingRequestsBanner({
+    required this.waitingRequests,
+    required this.visible,
+    required this.duration,
+    required this.curve,
+    required this.topOffset,
+    required this.leftInset,
+    required this.rightInset,
+    required this.onAdmit,
+    required this.onDeny,
+    required this.onOpenSheet,
+  });
+
+  final List<MeetingParticipant> waitingRequests;
+  final bool visible;
+  final Duration duration;
+  final Curve curve;
+  final double topOffset;
+  final double leftInset;
+  final double rightInset;
+  final ValueChanged<String> onAdmit;
+  final ValueChanged<String> onDeny;
+  final VoidCallback onOpenSheet;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.colors;
+    final colorScheme = context.colorScheme;
+    final textStyles = context.textStyles;
+    final isSingle = waitingRequests.length == 1;
+    final single = isSingle ? waitingRequests.first : null;
+
+    return Positioned(
+      top: topOffset,
+      left: leftInset,
+      right: rightInset,
+      child: IgnorePointer(
+        ignoring: !visible,
+        child: AnimatedSlide(
+          offset: visible ? Offset.zero : const Offset(0, -1),
+          duration: duration,
+          curve: curve,
+          child: AnimatedOpacity(
+            opacity: visible ? 1 : 0,
+            duration: duration,
+            curve: curve,
+            child: Center(
+              child: ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 460),
+                child: Material(
+                  color: colors.callControlSurface,
+                  elevation: 4,
+                  borderRadius: BorderRadius.circular(16),
+                  child: InkWell(
+                    onTap: isSingle ? null : onOpenSheet,
+                    borderRadius: BorderRadius.circular(16),
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 14,
+                        vertical: 10,
+                      ),
+                      child: Row(
+                        children: [
+                          Icon(
+                            Icons.person_add_alt_1_rounded,
+                            size: 18,
+                            color: colorScheme.primary,
+                          ),
+                          const SizedBox(width: 10),
+                          Expanded(
+                            child: Text(
+                              isSingle
+                                  ? '${single!.name} wants to join'
+                                  : '${waitingRequests.length} people are waiting',
+                              style: textStyles.bodyMedium,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ),
+                          if (isSingle) ...[
+                            TextButton(
+                              onPressed: () => onDeny(single!.userId),
+                              child: const Text('Deny'),
+                            ),
+                            const SizedBox(width: 4),
+                            FilledButton(
+                              onPressed: () => onAdmit(single!.userId),
+                              child: const Text('Admit'),
+                            ),
+                          ] else
+                            TextButton(
+                              onPressed: onOpenSheet,
+                              child: const Text('View'),
+                            ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 class _PortraitTopBarOverlay extends StatelessWidget {
   const _PortraitTopBarOverlay({
     required this.title,
     required this.elapsed,
     required this.participantCount,
+    required this.waitingBadgeCount,
     required this.isFrontCamera,
     required this.audioIcon,
     required this.audioTooltip,
@@ -532,6 +944,7 @@ class _PortraitTopBarOverlay extends StatelessWidget {
   final String title;
   final Duration elapsed;
   final int participantCount;
+  final int waitingBadgeCount;
   final bool isFrontCamera;
   final IconData audioIcon;
   final String audioTooltip;
@@ -611,16 +1024,20 @@ class _PortraitTopBarOverlay extends StatelessWidget {
                         icon: Icon(audioIcon),
                       ),
                       const SizedBox(width: 4),
-                      ActionChip(
-                        backgroundColor: colors.callControlSurface,
-                        side: BorderSide.none,
-                        avatar: Icon(
-                          Icons.people_outline_rounded,
-                          size: 16,
-                          color: colors.onSurface,
+                      Badge.count(
+                        isLabelVisible: waitingBadgeCount > 0,
+                        count: waitingBadgeCount,
+                        child: ActionChip(
+                          backgroundColor: colors.callControlSurface,
+                          side: BorderSide.none,
+                          avatar: Icon(
+                            Icons.people_outline_rounded,
+                            size: 16,
+                            color: colors.onSurface,
+                          ),
+                          label: Text('$participantCount'),
+                          onPressed: onOpenParticipants,
                         ),
-                        label: Text('$participantCount'),
-                        onPressed: onOpenParticipants,
                       ),
                     ],
                   ),
@@ -643,6 +1060,7 @@ class _PortraitBottomBarOverlay extends StatelessWidget {
     required this.isCameraOn,
     required this.isPresenting,
     required this.isHandRaised,
+    required this.waitingBadgeCount,
     required this.onToggleMic,
     required this.onToggleCamera,
     required this.onTogglePresenting,
@@ -658,6 +1076,7 @@ class _PortraitBottomBarOverlay extends StatelessWidget {
   final bool isCameraOn;
   final bool isPresenting;
   final bool isHandRaised;
+  final int waitingBadgeCount;
   final VoidCallback onToggleMic;
   final VoidCallback onToggleCamera;
   final VoidCallback onTogglePresenting;
@@ -717,6 +1136,7 @@ class _PortraitBottomBarOverlay extends StatelessWidget {
                           isCameraOn: isCameraOn,
                           isPresenting: isPresenting,
                           isHandRaised: isHandRaised,
+                          waitingBadgeCount: waitingBadgeCount,
                           onToggleMic: onToggleMic,
                           onToggleCamera: onToggleCamera,
                           onTogglePresenting: onTogglePresenting,
@@ -827,6 +1247,7 @@ class _LandscapeRightControlRail extends StatelessWidget {
     required this.isCameraOn,
     required this.isPresenting,
     required this.isHandRaised,
+    required this.waitingBadgeCount,
     required this.onToggleMic,
     required this.onToggleCamera,
     required this.onTogglePresenting,
@@ -842,6 +1263,7 @@ class _LandscapeRightControlRail extends StatelessWidget {
   final bool isCameraOn;
   final bool isPresenting;
   final bool isHandRaised;
+  final int waitingBadgeCount;
   final VoidCallback onToggleMic;
   final VoidCallback onToggleCamera;
   final VoidCallback onTogglePresenting;
@@ -906,6 +1328,7 @@ class _LandscapeRightControlRail extends StatelessWidget {
                               isCameraOn: isCameraOn,
                               isPresenting: isPresenting,
                               isHandRaised: isHandRaised,
+                              waitingBadgeCount: waitingBadgeCount,
                               onToggleMic: onToggleMic,
                               onToggleCamera: onToggleCamera,
                               onTogglePresenting: onTogglePresenting,
@@ -942,6 +1365,7 @@ List<Widget> _buildControlButtons({
   required bool isCameraOn,
   required bool isPresenting,
   required bool isHandRaised,
+  required int waitingBadgeCount,
   required VoidCallback onToggleMic,
   required VoidCallback onToggleCamera,
   required VoidCallback onTogglePresenting,
@@ -993,14 +1417,18 @@ List<Widget> _buildControlButtons({
       onPressed: onToggleHandRaised,
       size: buttonSize,
     ),
-    MediaToggleButton(
-      isActive: true,
-      activeIcon: Icons.more_vert_rounded,
-      inactiveIcon: Icons.more_vert_rounded,
-      tooltip: 'More options',
-      activeBackgroundColor: colors.tileSurface,
-      onPressed: onMore,
-      size: buttonSize,
+    Badge.count(
+      isLabelVisible: waitingBadgeCount > 0,
+      count: waitingBadgeCount,
+      child: MediaToggleButton(
+        isActive: true,
+        activeIcon: Icons.more_vert_rounded,
+        inactiveIcon: Icons.more_vert_rounded,
+        tooltip: 'More options',
+        activeBackgroundColor: colors.tileSurface,
+        onPressed: onMore,
+        size: buttonSize,
+      ),
     ),
   ];
 }
@@ -1048,13 +1476,23 @@ class _CallStage extends StatelessWidget {
   const _CallStage({
     required this.session,
     required this.remoteParticipants,
+    required this.pinnedParticipant,
+    required this.showTileMenu,
     required this.isLandscape,
+    required this.onTogglePin,
+    required this.onTileMenuOpened,
+    required this.onTileMenuClosed,
     required this.onRetryJoin,
   });
 
   final MeetingSessionState session;
   final List<MeetingParticipant> remoteParticipants;
+  final MeetingParticipant? pinnedParticipant;
+  final bool showTileMenu;
   final bool isLandscape;
+  final ValueChanged<String> onTogglePin;
+  final VoidCallback onTileMenuOpened;
+  final VoidCallback onTileMenuClosed;
   final VoidCallback onRetryJoin;
 
   @override
@@ -1076,6 +1514,17 @@ class _CallStage extends StatelessWidget {
       );
     }
 
+    if (pinnedParticipant != null) {
+      return ParticipantVideoTile(
+        participant: pinnedParticipant!,
+        isPinned: true,
+        showMenuButton: showTileMenu,
+        onTogglePin: () => onTogglePin(pinnedParticipant!.userId),
+        onMenuOpened: onTileMenuOpened,
+        onMenuClosed: onTileMenuClosed,
+      );
+    }
+
     final gridParticipants = remoteParticipants.isNotEmpty
         ? remoteParticipants
         : session.participants;
@@ -1083,6 +1532,10 @@ class _CallStage extends StatelessWidget {
     return _ParticipantGrid(
       participants: gridParticipants,
       isLandscape: isLandscape,
+      showTileMenu: showTileMenu,
+      onTogglePin: onTogglePin,
+      onTileMenuOpened: onTileMenuOpened,
+      onTileMenuClosed: onTileMenuClosed,
     );
   }
 }
@@ -1091,33 +1544,53 @@ class _ParticipantGrid extends StatelessWidget {
   const _ParticipantGrid({
     required this.participants,
     required this.isLandscape,
+    required this.showTileMenu,
+    required this.onTogglePin,
+    required this.onTileMenuOpened,
+    required this.onTileMenuClosed,
   });
 
   final List<MeetingParticipant> participants;
   final bool isLandscape;
+  final bool showTileMenu;
+  final ValueChanged<String> onTogglePin;
+  final VoidCallback onTileMenuOpened;
+  final VoidCallback onTileMenuClosed;
+
+  Widget _buildTile(MeetingParticipant participant, {bool isCompact = false}) {
+    final isRemote = !participant.isSelf;
+    return ParticipantVideoTile(
+      participant: participant,
+      isCompact: isCompact,
+      showMenuButton: showTileMenu && isRemote,
+      onTogglePin: isRemote ? () => onTogglePin(participant.userId) : null,
+      onMenuOpened: onTileMenuOpened,
+      onMenuClosed: onTileMenuClosed,
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
     final count = participants.length;
     if (count == 1) {
-      return ParticipantVideoTile(participant: participants.first);
+      return _buildTile(participants.first);
     }
 
     if (count == 2) {
       if (isLandscape) {
         return Row(
           children: [
-            Expanded(child: ParticipantVideoTile(participant: participants[0])),
+            Expanded(child: _buildTile(participants[0])),
             const SizedBox(width: 8),
-            Expanded(child: ParticipantVideoTile(participant: participants[1])),
+            Expanded(child: _buildTile(participants[1])),
           ],
         );
       }
       return Column(
         children: [
-          Expanded(child: ParticipantVideoTile(participant: participants[0])),
+          Expanded(child: _buildTile(participants[0])),
           const SizedBox(height: 8),
-          Expanded(child: ParticipantVideoTile(participant: participants[1])),
+          Expanded(child: _buildTile(participants[1])),
         ],
       );
     }
@@ -1129,17 +1602,11 @@ class _ParticipantGrid extends StatelessWidget {
             child: Row(
               children: [
                 Expanded(
-                  child: ParticipantVideoTile(
-                    participant: participants[0],
-                    isCompact: isLandscape,
-                  ),
+                  child: _buildTile(participants[0], isCompact: isLandscape),
                 ),
                 const SizedBox(width: 8),
                 Expanded(
-                  child: ParticipantVideoTile(
-                    participant: participants[1],
-                    isCompact: isLandscape,
-                  ),
+                  child: _buildTile(participants[1], isCompact: isLandscape),
                 ),
               ],
             ),
@@ -1149,18 +1616,12 @@ class _ParticipantGrid extends StatelessWidget {
             child: Row(
               children: [
                 Expanded(
-                  child: ParticipantVideoTile(
-                    participant: participants[2],
-                    isCompact: isLandscape,
-                  ),
+                  child: _buildTile(participants[2], isCompact: isLandscape),
                 ),
                 if (count == 4) ...[
                   const SizedBox(width: 8),
                   Expanded(
-                    child: ParticipantVideoTile(
-                      participant: participants[3],
-                      isCompact: isLandscape,
-                    ),
+                    child: _buildTile(participants[3], isCompact: isLandscape),
                   ),
                 ],
               ],
@@ -1179,10 +1640,7 @@ class _ParticipantGrid extends StatelessWidget {
         childAspectRatio: isLandscape ? 16 / 9 : 0.78,
       ),
       itemBuilder: (context, index) {
-        return ParticipantVideoTile(
-          participant: participants[index],
-          isCompact: isLandscape,
-        );
+        return _buildTile(participants[index], isCompact: isLandscape);
       },
     );
   }

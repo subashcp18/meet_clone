@@ -10,8 +10,10 @@ abstract class MeetingParticipant with _$MeetingParticipant {
   const factory MeetingParticipant({
     required String meetingId,
     required String userId,
+    @Default('waiting') String status,
     DateTime? joinedAt,
     DateTime? leftAt,
+    DateTime? lastSeenAt,
     @Default(false) bool isMuted,
     @Default(false) bool isCameraOff,
     @Default(false) bool handRaised,
@@ -34,5 +36,11 @@ abstract class MeetingParticipant with _$MeetingParticipant {
 
   bool get isHandRaised => handRaised;
 
-  bool get isActive => leftAt == null;
+  bool get isWaiting => status == 'waiting';
+
+  bool get isAdmitted => status == 'admitted';
+
+  bool get isDenied => status == 'denied';
+
+  bool get isActive => isAdmitted && leftAt == null;
 }

@@ -42,7 +42,7 @@ class ScheduleController extends _$ScheduleController {
 
     return result.when(
       success: (meeting) {
-        ref.read(upcomingMeetingsProvider.notifier).addMeeting(meeting);
+        ref.invalidate(upcomingMeetingsProvider);
         state = const ScheduleState();
         return meeting;
       },

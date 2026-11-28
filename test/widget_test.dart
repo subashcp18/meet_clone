@@ -6,20 +6,24 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 
 import 'package:meet_clone/app.dart';
 import 'package:meet_clone/core/network/api_exception.dart';
+import 'package:meet_clone/core/network/api_result.dart';
 import 'package:meet_clone/core/theme/theme_provider.dart';
 import 'package:meet_clone/core/utils/validators.dart';
 import 'package:meet_clone/features/auth/presentation/screens/forgot_password_screen.dart';
 import 'package:meet_clone/features/auth/presentation/screens/login_screen.dart';
 import 'package:meet_clone/features/auth/presentation/screens/register_screen.dart';
 import 'package:meet_clone/features/auth/providers/auth_provider.dart';
+import 'package:meet_clone/features/home/presentation/screens/home_screen.dart';
 import 'package:meet_clone/features/meeting/data/models/meeting.dart';
 import 'package:meet_clone/features/meeting/data/models/meeting_participant.dart';
+import 'package:meet_clone/features/meeting/data/models/meeting_preview.dart';
+import 'package:meet_clone/features/meeting/data/models/open_meeting.dart';
 import 'package:meet_clone/features/meeting/data/models/scheduled_meeting.dart';
 import 'package:meet_clone/features/meeting/data/repositories/meeting_repository.dart';
+import 'package:meet_clone/features/meeting/data/repositories/mock_call_store.dart';
 import 'package:meet_clone/features/meeting/presentation/in_call/in_call_screen.dart';
+import 'package:meet_clone/features/meeting/providers/in_call_ui_provider.dart';
 import 'package:meet_clone/features/meeting/providers/meeting_session_provider.dart';
-import 'package:meet_clone/core/network/api_result.dart';
-import 'package:meet_clone/features/home/presentation/screens/home_screen.dart';
 
 void main() {
   test('Validators cover auth and meeting code rules', () {
@@ -112,15 +116,27 @@ void main() {
     );
     expect(
       ApiException.fromPostgrestException(
-        const PostgrestException(message: 'meeting not found'),
+        const PostgrestException(message: 'MEETING_NOT_FOUND'),
       ).statusCode,
       404,
     );
     expect(
       ApiException.fromPostgrestException(
-        const PostgrestException(message: 'meeting full'),
+        const PostgrestException(message: 'MEETING_ENDED'),
+      ).message,
+      'This meeting has ended.',
+    );
+    expect(
+      ApiException.fromPostgrestException(
+        const PostgrestException(message: 'MEETING_FULL'),
       ),
       isA<ValidationException>(),
+    );
+    expect(
+      ApiException.fromPostgrestException(
+        const PostgrestException(message: 'NOT_HOST'),
+      ).statusCode,
+      403,
     );
   });
 
@@ -156,7 +172,9 @@ void main() {
       await tester.enterText(regFields.at(1), 'alex@example.com');
       await tester.enterText(regFields.at(2), 'secret12');
       await tester.enterText(regFields.at(3), 'secret12');
-      await tester.ensureVisible(find.widgetWithText(ElevatedButton, 'Create account'));
+      await tester.ensureVisible(
+        find.widgetWithText(ElevatedButton, 'Create account'),
+      );
       await tester.tap(find.widgetWithText(ElevatedButton, 'Create account'));
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 250));
@@ -187,7 +205,9 @@ void main() {
       await tester.enterText(duplicateFields.at(1), 'alex@example.com');
       await tester.enterText(duplicateFields.at(2), 'secret12');
       await tester.enterText(duplicateFields.at(3), 'secret12');
-      await tester.ensureVisible(find.widgetWithText(ElevatedButton, 'Create account'));
+      await tester.ensureVisible(
+        find.widgetWithText(ElevatedButton, 'Create account'),
+      );
       await tester.tap(find.widgetWithText(ElevatedButton, 'Create account'));
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 250));
@@ -256,93 +276,113 @@ void main() {
     },
   );
 
-  testWidgets('Auth screens render without overflow in portrait and landscape with keyboard', (
-    WidgetTester tester,
-  ) async {
-    SharedPreferences.setMockInitialValues({});
-    final prefs = await SharedPreferences.getInstance();
-    final container = ProviderContainer(
-      overrides: [sharedPreferencesProvider.overrideWithValue(prefs)],
-    );
-    addTearDown(container.dispose);
+  testWidgets(
+    'Auth screens render without overflow in portrait and landscape with keyboard',
+    (WidgetTester tester) async {
+      SharedPreferences.setMockInitialValues({});
+      final prefs = await SharedPreferences.getInstance();
+      final container = ProviderContainer(
+        overrides: [sharedPreferencesProvider.overrideWithValue(prefs)],
+      );
+      addTearDown(container.dispose);
 
-    for (final size in const [Size(390, 844), Size(844, 390)]) {
-      for (final screen in const [
-        LoginScreen(),
-        RegisterScreen(),
-        ForgotPasswordScreen(),
-      ]) {
-        await tester.pumpWidget(
-          UncontrolledProviderScope(
-            container: container,
-            child: MaterialApp(
-              home: MediaQuery(
-                data: MediaQueryData(
-                  size: size,
-                  viewInsets: const EdgeInsets.only(bottom: 300),
+      for (final size in const [Size(390, 844), Size(844, 390)]) {
+        for (final screen in const [
+          LoginScreen(),
+          RegisterScreen(),
+          ForgotPasswordScreen(),
+        ]) {
+          await tester.pumpWidget(
+            UncontrolledProviderScope(
+              container: container,
+              child: MaterialApp(
+                home: MediaQuery(
+                  data: MediaQueryData(
+                    size: size,
+                    viewInsets: const EdgeInsets.only(bottom: 300),
+                  ),
+                  child: screen,
                 ),
-                child: screen,
               ),
             ),
-          ),
-        );
-        await tester.pump();
-        expect(tester.takeException(), isNull);
+          );
+          await tester.pump();
+          expect(tester.takeException(), isNull);
+        }
       }
-    }
-  });
+    },
+  );
 
-  testWidgets('InCallScreen renders without overflow on portrait and landscape', (
-    WidgetTester tester,
-  ) async {
-    SharedPreferences.setMockInitialValues({});
-    final prefs = await SharedPreferences.getInstance();
+  testWidgets(
+    'InCallScreen renders without overflow and supports local tile pin',
+    (WidgetTester tester) async {
+      SharedPreferences.setMockInitialValues({});
+      final prefs = await SharedPreferences.getInstance();
 
-    final container = ProviderContainer(
-      overrides: [
-        sharedPreferencesProvider.overrideWithValue(prefs),
-      ],
-    );
+      final container = ProviderContainer(
+        overrides: [
+          sharedPreferencesProvider.overrideWithValue(prefs),
+        ],
+      );
 
-    container.read(meetingSessionProvider.notifier).state =
-        const MeetingSessionState(
-          code: 'abc-defg-hij',
-          title: 'Design Review',
-          participants: [
-            MeetingParticipant(
-              meetingId: 'm-1',
-              userId: 'p-self',
-              displayName: 'You',
-              email: 'you@example.com',
-              isSelf: true,
-            ),
-            MeetingParticipant(
-              meetingId: 'm-1',
-              userId: 'p-1',
-              displayName: 'Alex Morgan',
-              email: 'alex@example.com',
-              isSpeaking: true,
-            ),
-          ],
-        );
+      container.read(meetingSessionProvider.notifier).state =
+          const MeetingSessionState(
+            meetingId: 'm-1',
+            code: 'abc-defg-hij',
+            title: 'Design Review',
+            participants: [
+              MeetingParticipant(
+                meetingId: 'm-1',
+                userId: 'p-self',
+                status: 'admitted',
+                displayName: 'You',
+                email: 'you@example.com',
+                isSelf: true,
+              ),
+              MeetingParticipant(
+                meetingId: 'm-1',
+                userId: 'p-1',
+                status: 'admitted',
+                displayName: 'Alex Morgan',
+                email: 'alex@example.com',
+                isSpeaking: true,
+              ),
+              MeetingParticipant(
+                meetingId: 'm-1',
+                userId: 'p-2',
+                status: 'admitted',
+                displayName: 'Sam Rivera',
+                email: 'sam@example.com',
+              ),
+            ],
+          );
 
-    await tester.pumpWidget(
-      UncontrolledProviderScope(
-        container: container,
-        child: const MaterialApp(
-          home: InCallScreen(code: 'abc-defg-hij'),
+      await tester.pumpWidget(
+        UncontrolledProviderScope(
+          container: container,
+          child: const MaterialApp(
+            home: InCallScreen(code: 'abc-defg-hij'),
+          ),
         ),
-      ),
-    );
-    await tester.pump();
-    expect(tester.takeException(), isNull);
+      );
+      await tester.pump();
+      expect(tester.takeException(), isNull);
+      expect(find.text('Alex Morgan'), findsOneWidget);
+      expect(find.text('Sam Rivera'), findsOneWidget);
 
-    await tester.pumpWidget(const SizedBox.shrink());
-    await tester.pump();
-    container.dispose();
-  });
+      container.read(pinnedParticipantControllerProvider.notifier).pin('p-1');
+      await tester.pump();
+      expect(find.text('Alex Morgan'), findsOneWidget);
+      expect(find.text('Sam Rivera'), findsNothing);
+      expect(find.byIcon(Icons.push_pin_rounded), findsOneWidget);
 
-  testWidgets('HomeScreen renders empty state when listUpcoming returns empty', (
+      await tester.pumpWidget(const SizedBox.shrink());
+      await tester.pump(const Duration(milliseconds: 100));
+      container.dispose();
+    },
+  );
+
+  testWidgets('HomeScreen renders empty state when listOpenMeetings returns empty', (
     WidgetTester tester,
   ) async {
     SharedPreferences.setMockInitialValues({});
@@ -366,9 +406,76 @@ void main() {
 
     expect(find.text('No upcoming meetings'), findsOneWidget);
   });
+
+  test('MockCallStore enforces lifecycle, host mute/remove, and waiting room', () {
+    final store = MockCallStore();
+    final hostMeeting = store.createInstantMeeting(
+      hostId: 'host-1',
+      hostName: 'Host User',
+    );
+
+    final previewBeforeJoin = store.getPreview(
+      hostMeeting.code,
+      currentUserId: 'guest-1',
+    );
+    expect(previewBeforeJoin.hostInCall, isFalse);
+    expect(previewBeforeJoin.previewParticipants, isEmpty);
+
+    final hostJoin = store.requestJoin(
+      hostMeeting.code,
+      userId: 'host-1',
+      displayName: 'Host User',
+      email: 'host@example.com',
+    );
+    expect(hostJoin.isAdmitted, isTrue);
+
+    final guestReq = store.requestJoin(
+      hostMeeting.code,
+      userId: 'guest-1',
+      displayName: 'Guest User',
+      email: 'guest@example.com',
+    );
+    expect(guestReq.isWaiting, isTrue);
+
+    store.admit(hostMeeting.id, 'guest-1', callerUserId: 'host-1');
+    expect(store.admittedFor(hostMeeting.id, 'host-1').length, 2);
+
+    store.hostMute(hostMeeting.id, 'guest-1', callerUserId: 'host-1');
+    expect(
+      store.myRowFor(hostMeeting.id, 'guest-1')?.isMuted,
+      isTrue,
+    );
+
+    store.removeParticipant(hostMeeting.id, 'guest-1', callerUserId: 'host-1');
+    expect(store.myRowFor(hostMeeting.id, 'guest-1')?.isDenied, isTrue);
+
+    store.leaveMeeting(hostMeeting.id, 'host-1');
+    expect(
+      store
+          .listOpenMeetings(currentUserId: 'host-1')
+          .any((m) => m.id == hostMeeting.id && m.isLive),
+      isTrue,
+    );
+
+    store.endMeeting(hostMeeting.id);
+    expect(
+      store
+          .listOpenMeetings(currentUserId: 'host-1')
+          .any((m) => m.id == hostMeeting.id),
+      isFalse,
+    );
+    expect(
+      () => store.getPreview(hostMeeting.code, currentUserId: 'guest-1'),
+      throwsA(isA<ValidationException>()),
+    );
+  });
 }
 
 class _EmptyMeetingRepository implements MeetingRepository {
+  @override
+  Future<Result<List<OpenMeeting>>> listOpenMeetings() async =>
+      const Success(<OpenMeeting>[]);
+
   @override
   Future<Result<List<Meeting>>> listUpcoming() async =>
       const Success(<Meeting>[]);
@@ -378,12 +485,20 @@ class _EmptyMeetingRepository implements MeetingRepository {
       throw UnimplementedError();
 
   @override
-  Future<Result<void>> endMeeting(String meetingId) async =>
+  Future<Result<MeetingPreview>> getPreview(String code) =>
+      throw UnimplementedError();
+
+  @override
+  Future<Result<JoinRequestResult>> requestJoin(String code) =>
+      throw UnimplementedError();
+
+  @override
+  Future<Result<void>> cancelJoinRequest(String meetingId) async =>
       const Success(null);
 
   @override
-  Future<Result<Meeting>> joinByCode(String code) =>
-      throw UnimplementedError();
+  Future<Result<void>> endMeeting(String meetingId) async =>
+      const Success(null);
 
   @override
   Future<Result<void>> leaveMeeting(String meetingId) async =>

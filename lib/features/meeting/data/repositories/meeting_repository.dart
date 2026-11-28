@@ -1,5 +1,4 @@
-import 'dart:math';
-
+import 'package:flutter/foundation.dart';
 import 'package:riverpod_annotation/riverpod_annotation.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
@@ -7,180 +6,113 @@ import '../../../../core/network/api_exception.dart';
 import '../../../../core/network/api_result.dart';
 import '../../../../core/network/base_repository.dart';
 import '../../../../core/network/supabase_provider.dart';
+import '../../../auth/data/repositories/auth_repository.dart';
 import '../models/meeting.dart';
-import '../models/meeting_participant.dart';
+import '../models/meeting_preview.dart';
+import '../models/open_meeting.dart';
 import '../models/scheduled_meeting.dart';
+import 'mock_call_store.dart';
 
 part 'meeting_repository.g.dart';
 
 abstract interface class MeetingRepository {
   Future<Result<Meeting>> createInstantMeeting();
   Future<Result<Meeting>> scheduleMeeting(ScheduledMeeting request);
-  Future<Result<Meeting>> joinByCode(String code);
+  Future<Result<MeetingPreview>> getPreview(String code);
+  Future<Result<JoinRequestResult>> requestJoin(String code);
+  Future<Result<void>> cancelJoinRequest(String meetingId);
   Future<Result<void>> leaveMeeting(String meetingId);
-  Future<Result<List<Meeting>>> listUpcoming();
   Future<Result<void>> endMeeting(String meetingId);
+  Future<Result<List<Meeting>>> listUpcoming();
+  Future<Result<List<OpenMeeting>>> listOpenMeetings();
 }
 
-class MockMeetingRepository implements MeetingRepository {
-  static const String _alphabet = 'abcdefghijkmnpqrstuvwxyz';
-  final Random _random = Random();
+class MockMeetingRepository extends BaseRepository
+    implements MeetingRepository {
+  MockMeetingRepository(this._store, this._authRepository);
 
-  static List<MeetingParticipant> _mockParticipantsFor(String meetingId) => [
-    MeetingParticipant(
-      meetingId: meetingId,
-      userId: 'p-1',
-      displayName: 'Alex Morgan',
-      email: 'alex.morgan@example.com',
-      isHost: true,
-      isSpeaking: true,
-    ),
-    MeetingParticipant(
-      meetingId: meetingId,
-      userId: 'p-2',
-      displayName: 'Sam Rivera',
-      email: 'sam.rivera@example.com',
-      isMuted: true,
-    ),
-    MeetingParticipant(
-      meetingId: meetingId,
-      userId: 'p-3',
-      displayName: 'Jordan Lee',
-      email: 'jordan.lee@example.com',
-      isCameraOff: true,
-      handRaised: true,
-    ),
-    MeetingParticipant(
-      meetingId: meetingId,
-      userId: 'p-4',
-      displayName: 'Taylor Kim',
-      email: 'taylor.kim@example.com',
-    ),
-  ];
+  final MockCallStore _store;
+  final AuthRepository _authRepository;
 
-  List<Meeting> _mockUpcoming() {
-    final now = DateTime.now();
-    final todayBase = DateTime(now.year, now.month, now.day, 14, 30);
-
-    return [
-      Meeting(
-        id: 'm-1',
-        title: 'Product Design Sync',
-        code: 'abc-defg-hij',
-        hostId: 'p-1',
-        hostName: 'Alex Morgan',
-        scheduledAt: todayBase,
-        durationMinutes: 45,
-        status: 'live',
-        participants: _mockParticipantsFor('m-1'),
-      ),
-      Meeting(
-        id: 'm-2',
-        title: 'Flutter Architecture Review',
-        code: 'kmn-pqrs-tuv',
-        hostId: 'p-2',
-        hostName: 'Sam Rivera',
-        scheduledAt: todayBase.add(const Duration(hours: 2)),
-        durationMinutes: 30,
-        status: 'scheduled',
-        participants: _mockParticipantsFor('m-2'),
-      ),
-      Meeting(
-        id: 'm-3',
-        title: 'Weekly Sprint Planning',
-        code: 'wxy-zabc-def',
-        hostId: 'p-3',
-        hostName: 'Jordan Lee',
-        scheduledAt: todayBase.add(const Duration(days: 1, hours: -4)),
-        durationMinutes: 60,
-        status: 'scheduled',
-        participants: _mockParticipantsFor('m-3'),
-      ),
-    ];
-  }
+  String get _userId => _authRepository.currentUser?.id ?? 'u-mock';
+  String get _userName => _authRepository.currentUser?.displayName ?? 'You';
+  String get _userEmail =>
+      _authRepository.currentUser?.email ?? 'you@example.com';
 
   @override
   Future<Result<Meeting>> createInstantMeeting() async {
-    await Future<void>.delayed(const Duration(milliseconds: 150));
-    final code = '${_segment(3)}-${_segment(4)}-${_segment(3)}';
-    final now = DateTime.now();
+    await Future<void>.delayed(const Duration(milliseconds: 120));
     return Success(
-      Meeting(
-        id: 'm-${now.millisecondsSinceEpoch}',
-        title: 'Instant meeting',
-        code: code,
-        hostId: 'u-mock',
-        hostName: 'You',
-        isInstant: true,
-        status: 'live',
-        createdAt: now,
-        durationMinutes: 60,
-      ),
+      _store.createInstantMeeting(hostId: _userId, hostName: _userName),
     );
   }
 
   @override
   Future<Result<Meeting>> scheduleMeeting(ScheduledMeeting request) async {
-    await Future<void>.delayed(const Duration(milliseconds: 150));
-    final code = '${_segment(3)}-${_segment(4)}-${_segment(3)}';
+    await Future<void>.delayed(const Duration(milliseconds: 120));
     return Success(
-      Meeting(
-        id: 'm-${DateTime.now().millisecondsSinceEpoch}',
-        title: request.title.trim(),
-        code: code,
-        hostId: 'u-mock',
-        hostName: 'You',
-        scheduledAt: request.startTime,
-        durationMinutes: request.durationMinutes,
-        status: 'scheduled',
-        notes: request.notes,
+      _store.scheduleMeeting(request, hostId: _userId, hostName: _userName),
+    );
+  }
+
+  @override
+  Future<Result<MeetingPreview>> getPreview(String code) async {
+    await Future<void>.delayed(const Duration(milliseconds: 120));
+    return guard(() async {
+      final preview = _store.getPreview(code, currentUserId: _userId);
+      if (kDebugMode) {
+        debugPrint(
+          'MeetingPreview code=${preview.code} status=${preview.status}',
+        );
+      }
+      return preview;
+    });
+  }
+
+  @override
+  Future<Result<JoinRequestResult>> requestJoin(String code) async {
+    await Future<void>.delayed(const Duration(milliseconds: 120));
+    return guard(
+      () async => _store.requestJoin(
+        code,
+        userId: _userId,
+        displayName: _userName,
+        email: _userEmail,
       ),
     );
   }
 
   @override
-  Future<Result<Meeting>> joinByCode(String code) async {
-    await Future<void>.delayed(const Duration(milliseconds: 150));
-    final existing = _mockUpcoming().where((m) => m.code == code).firstOrNull;
-    final meetingId = existing?.id ?? 'm-$code';
-    return Success(
-      Meeting(
-        id: meetingId,
-        title: existing?.title ?? 'Meeting ($code)',
-        code: code,
-        hostId: existing?.hostId ?? 'p-1',
-        hostName: existing?.hostName ?? 'Host',
-        scheduledAt: existing?.scheduledAt ?? DateTime.now(),
-        durationMinutes: existing?.durationMinutes ?? 60,
-        status: 'live',
-        participants: existing?.participants ?? _mockParticipantsFor(meetingId),
-      ),
-    );
+  Future<Result<void>> cancelJoinRequest(String meetingId) async {
+    await Future<void>.delayed(const Duration(milliseconds: 80));
+    _store.cancelJoinRequest(meetingId, _userId);
+    return const Success(null);
   }
 
   @override
   Future<Result<void>> leaveMeeting(String meetingId) async {
-    await Future<void>.delayed(const Duration(milliseconds: 100));
+    await Future<void>.delayed(const Duration(milliseconds: 80));
+    _store.leaveMeeting(meetingId, _userId);
+    return const Success(null);
+  }
+
+  @override
+  Future<Result<void>> endMeeting(String meetingId) async {
+    await Future<void>.delayed(const Duration(milliseconds: 80));
+    _store.endMeeting(meetingId);
     return const Success(null);
   }
 
   @override
   Future<Result<List<Meeting>>> listUpcoming() async {
-    await Future<void>.delayed(const Duration(milliseconds: 150));
-    return Success(_mockUpcoming());
+    await Future<void>.delayed(const Duration(milliseconds: 120));
+    return Success(_store.listUpcoming());
   }
 
   @override
-  Future<Result<void>> endMeeting(String meetingId) async {
-    await Future<void>.delayed(const Duration(milliseconds: 100));
-    return const Success(null);
-  }
-
-  String _segment(int length) {
-    return List.generate(
-      length,
-      (_) => _alphabet[_random.nextInt(_alphabet.length)],
-    ).join();
+  Future<Result<List<OpenMeeting>>> listOpenMeetings() async {
+    await Future<void>.delayed(const Duration(milliseconds: 120));
+    return Success(_store.listOpenMeetings(currentUserId: _userId));
   }
 }
 
@@ -225,49 +157,52 @@ class SupabaseMeetingRepository extends BaseRepository
   }
 
   @override
-  Future<Result<Meeting>> joinByCode(String code) {
+  Future<Result<MeetingPreview>> getPreview(String code) {
     return guard(() async {
       final normalized = code.trim().toLowerCase();
       final result = await _client.rpc<dynamic>(
-        'join_meeting',
-        params: {'code': normalized},
+        'get_meeting_preview',
+        params: {'p_code': normalized},
       );
-      final meeting = Meeting.fromJson(_extractMap(result));
-      final hostProfile = await _client
-          .from('profiles')
-          .select('display_name')
-          .eq('id', meeting.hostId)
-          .maybeSingle();
-      final hostName = hostProfile?['display_name'] as String? ?? 'Host';
-
-      final participantRows = await _client
-          .from('meeting_participants')
-          .select('*, profile:profiles(display_name, avatar_url)')
-          .eq('meeting_id', meeting.id)
-          .isFilter('left_at', null);
-
-      final currentUid = _client.auth.currentUser?.id;
-      final participants = participantRows.map((row) {
-        final profileData = row['profile'];
-        final displayName = profileData is Map<String, dynamic>
-            ? (profileData['display_name'] as String? ?? 'Participant')
-            : 'Participant';
-        final avatarUrl = profileData is Map<String, dynamic>
-            ? profileData['avatar_url'] as String?
-            : null;
-        final cleaned = Map<String, dynamic>.from(row)..remove('profile');
-        final participant = MeetingParticipant.fromJson(cleaned);
-        return participant.copyWith(
-          displayName: displayName,
-          avatarUrl: avatarUrl,
-          isHost: participant.userId == meeting.hostId,
-          isSelf: participant.userId == currentUid,
+      final preview = MeetingPreview.fromJson(_extractMap(result));
+      if (kDebugMode) {
+        debugPrint(
+          'MeetingPreview code=${preview.code} status=${preview.status}',
         );
-      }).toList();
+      }
+      return preview;
+    });
+  }
 
-      return meeting.copyWith(
-        hostName: hostName,
-        participants: participants,
+  @override
+  Future<Result<JoinRequestResult>> requestJoin(String code) {
+    return guard(() async {
+      final normalized = code.trim().toLowerCase();
+      final result = await _client.rpc<dynamic>(
+        'request_join',
+        params: {'p_code': normalized},
+      );
+      final map = _extractMap(result);
+      final participantStatus =
+          map['participant_status'] as String? ?? 'waiting';
+      final meetingMap = map['meeting'];
+      if (meetingMap is! Map<String, dynamic>) {
+        throw const ServerException();
+      }
+      final meeting = Meeting.fromJson(meetingMap);
+      return JoinRequestResult(
+        meeting: meeting,
+        participantStatus: participantStatus,
+      );
+    });
+  }
+
+  @override
+  Future<Result<void>> cancelJoinRequest(String meetingId) {
+    return guard(() async {
+      await _client.rpc<void>(
+        'cancel_join_request',
+        params: {'p_meeting_id': meetingId},
       );
     });
   }
@@ -277,7 +212,17 @@ class SupabaseMeetingRepository extends BaseRepository
     return guard(() async {
       await _client.rpc<void>(
         'leave_meeting',
-        params: {'meeting_id': meetingId},
+        params: {'p_meeting_id': meetingId},
+      );
+    });
+  }
+
+  @override
+  Future<Result<void>> endMeeting(String meetingId) {
+    return guard(() async {
+      await _client.rpc<void>(
+        'end_meeting',
+        params: {'p_meeting_id': meetingId},
       );
     });
   }
@@ -285,11 +230,10 @@ class SupabaseMeetingRepository extends BaseRepository
   @override
   Future<Result<List<Meeting>>> listUpcoming() {
     return guard(() async {
-      final nowIso = DateTime.now().toUtc().toIso8601String();
       final rows = await _client
           .from('meetings')
           .select('*, host:profiles!host_id(display_name)')
-          .or('status.eq.live,and(status.eq.scheduled,scheduled_at.gte.$nowIso)')
+          .inFilter('status', ['scheduled', 'live'])
           .order('scheduled_at', ascending: true, nullsFirst: false)
           .order('created_at', ascending: false);
 
@@ -309,12 +253,16 @@ class SupabaseMeetingRepository extends BaseRepository
   }
 
   @override
-  Future<Result<void>> endMeeting(String meetingId) {
+  Future<Result<List<OpenMeeting>>> listOpenMeetings() {
     return guard(() async {
-      await _client
-          .from('meetings')
-          .update({'status': 'ended'})
-          .eq('id', meetingId);
+      final result = await _client.rpc<dynamic>('my_open_meetings');
+      if (result is! List) {
+        return const <OpenMeeting>[];
+      }
+      return result
+          .whereType<Map<String, dynamic>>()
+          .map(OpenMeeting.fromJson)
+          .toList();
     });
   }
 
@@ -333,7 +281,10 @@ class SupabaseMeetingRepository extends BaseRepository
 MeetingRepository meetingRepository(Ref ref) {
   final useMock = ref.watch(useMockApiProvider);
   if (useMock) {
-    return MockMeetingRepository();
+    return MockMeetingRepository(
+      ref.watch(mockCallStoreProvider),
+      ref.watch(authRepositoryProvider),
+    );
   }
   return SupabaseMeetingRepository(ref.watch(supabaseClientProvider));
 }

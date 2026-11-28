@@ -12,26 +12,107 @@ import '../../../../core/widgets/app_error_state.dart';
 import '../../../../core/widgets/app_loading_indicator.dart';
 import '../../../../core/widgets/app_user_avatar.dart';
 import '../../../auth/providers/auth_provider.dart';
-import '../../../meeting/data/models/meeting.dart';
+import '../../../meeting/data/models/open_meeting.dart';
+import '../../../meeting/data/repositories/meeting_repository.dart';
 import '../../providers/home_provider.dart';
 import '../widgets/meeting_list_card.dart';
 import '../widgets/new_meeting_sheet.dart';
 
 enum _AccountMenuAction { settings, signOut }
 
-class HomeScreen extends ConsumerWidget {
+enum _OngoingMenuAction { endMeeting }
+
+class HomeScreen extends ConsumerStatefulWidget {
   const HomeScreen({super.key});
 
-  // region: ACTIONS
-  void _openLobby(BuildContext context, String code) {
-    context.push(RouteNames.lobbyLocation(code));
+  @override
+  ConsumerState<HomeScreen> createState() => _HomeScreenState();
+}
+
+class _HomeScreenState extends ConsumerState<HomeScreen>
+    with WidgetsBindingObserver {
+  // region: LIFECYCLE
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
   }
 
-  Future<void> _handleAccountAction(
-    BuildContext context,
-    WidgetRef ref,
-    _AccountMenuAction action,
-  ) async {
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed && mounted) {
+      ref.invalidate(upcomingMeetingsProvider);
+    }
+  }
+  // endregion
+
+  // region: ACTIONS
+  Future<void> _openLobby(String code) async {
+    await context.push(RouteNames.lobbyLocation(code));
+    if (mounted) {
+      ref.invalidate(upcomingMeetingsProvider);
+    }
+  }
+
+  Future<void> _openJoinWithCode() async {
+    await context.pushNamed(RouteNames.join);
+    if (mounted) {
+      ref.invalidate(upcomingMeetingsProvider);
+    }
+  }
+
+  Future<void> _confirmEndMeeting(OpenMeeting meeting) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('End this meeting?'),
+        content: Text(
+          'Ending "${meeting.title}" closes the meeting for everyone.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(false),
+            child: const Text('Cancel'),
+          ),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(
+              backgroundColor: dialogContext.colors.endCallRed,
+              foregroundColor: dialogContext.colorScheme.onError,
+            ),
+            onPressed: () => Navigator.of(dialogContext).pop(true),
+            child: const Text('End meeting'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) {
+      return;
+    }
+    final result = await ref
+        .read(meetingRepositoryProvider)
+        .endMeeting(meeting.id);
+    if (!mounted) {
+      return;
+    }
+    result.when(
+      success: (_) {
+        ref.invalidate(upcomingMeetingsProvider);
+      },
+      failure: (exception) {
+        ScaffoldMessenger.of(context)
+          ..hideCurrentSnackBar()
+          ..showSnackBar(SnackBar(content: Text(exception.message)));
+      },
+    );
+  }
+
+  Future<void> _handleAccountAction(_AccountMenuAction action) async {
     switch (action) {
       case _AccountMenuAction.settings:
         await context.pushNamed(RouteNames.settings);
@@ -43,7 +124,7 @@ class HomeScreen extends ConsumerWidget {
 
   // region: BUILD
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  Widget build(BuildContext context) {
     final selectedTab = ref.watch(homeTabProvider);
     final user = ref.watch(authControllerProvider).asData?.value;
     final meetingsAsync = ref.watch(upcomingMeetingsProvider);
@@ -51,7 +132,7 @@ class HomeScreen extends ConsumerWidget {
     final textStyles = context.textStyles;
     final userEmail = user?.email ?? user?.displayName ?? 'User';
 
-    ref.listen<AsyncValue<List<Meeting>>>(upcomingMeetingsProvider, (
+    ref.listen<AsyncValue<List<OpenMeeting>>>(upcomingMeetingsProvider, (
       previous,
       next,
     ) {
@@ -87,7 +168,7 @@ class HomeScreen extends ConsumerWidget {
             padding: const EdgeInsets.only(right: 12),
             child: PopupMenuButton<_AccountMenuAction>(
               tooltip: userEmail,
-              onSelected: (action) => _handleAccountAction(context, ref, action),
+              onSelected: _handleAccountAction,
               itemBuilder: (context) => [
                 PopupMenuItem<_AccountMenuAction>(
                   enabled: false,
@@ -133,15 +214,16 @@ class HomeScreen extends ConsumerWidget {
             ? _MeetTabView(
                 meetingsAsync: meetingsAsync,
                 onNewMeeting: () => NewMeetingSheet.show(context),
-                onJoinWithCode: () => context.pushNamed(RouteNames.join),
-                onJoinMeeting: (code) => _openLobby(context, code),
+                onJoinWithCode: _openJoinWithCode,
+                onJoinMeeting: _openLobby,
+                onEndMeeting: _confirmEndMeeting,
                 onRefresh: () =>
                     ref.read(upcomingMeetingsProvider.notifier).refresh(),
               )
             : _CalendarTabView(
                 meetingsAsync: meetingsAsync,
                 onSchedule: () => context.pushNamed(RouteNames.schedule),
-                onJoinMeeting: (code) => _openLobby(context, code),
+                onJoinMeeting: _openLobby,
                 onRefresh: () =>
                     ref.read(upcomingMeetingsProvider.notifier).refresh(),
               ),
@@ -182,13 +264,15 @@ class _MeetTabView extends StatelessWidget {
     required this.onNewMeeting,
     required this.onJoinWithCode,
     required this.onJoinMeeting,
+    required this.onEndMeeting,
     required this.onRefresh,
   });
 
-  final AsyncValue<List<Meeting>> meetingsAsync;
+  final AsyncValue<List<OpenMeeting>> meetingsAsync;
   final VoidCallback onNewMeeting;
   final VoidCallback onJoinWithCode;
   final ValueChanged<String> onJoinMeeting;
+  final ValueChanged<OpenMeeting> onEndMeeting;
   final Future<void> Function() onRefresh;
 
   @override
@@ -229,25 +313,185 @@ class _MeetTabView extends StatelessWidget {
             ],
           ),
         ),
-        Padding(
-          padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
-          child: Text(
-            'Upcoming meetings',
-            style: textStyles.titleSmall.copyWith(
-              color: colors.onSurfaceVariant,
-            ),
-          ),
-        ),
         Expanded(
-          child: _MeetingsListView(
-            meetingsAsync: meetingsAsync,
-            emptyTitle: 'No upcoming meetings',
-            emptySubtitle: 'Start a new meeting or join one using a code.',
-            onJoinMeeting: onJoinMeeting,
-            onRefresh: onRefresh,
+          child: meetingsAsync.when(
+            loading: () => const AppLoadingIndicator(
+              message: 'Loading meetings...',
+            ),
+            error: (error, _) {
+              return AppErrorState(
+                message: ApiException.friendlyMessage(error),
+                onRetry: onRefresh,
+              );
+            },
+            data: (meetings) {
+              final ongoing = meetings.where((m) => m.isLive).toList();
+              final upcoming = meetings.where((m) => !m.isLive).toList();
+
+              if (ongoing.isEmpty && upcoming.isEmpty) {
+                return AppEmptyState(
+                  icon: Icons.event_available_rounded,
+                  title: 'No upcoming meetings',
+                  subtitle: 'Start a new meeting or join one using a code.',
+                  actionLabel: 'Refresh',
+                  onAction: onRefresh,
+                );
+              }
+
+              return RefreshIndicator(
+                onRefresh: onRefresh,
+                child: ListView(
+                  padding: const EdgeInsets.fromLTRB(16, 8, 16, 24),
+                  children: [
+                    if (ongoing.isNotEmpty) ...[
+                      Padding(
+                        padding: const EdgeInsets.only(bottom: 8),
+                        child: Text(
+                          'Ongoing',
+                          style: textStyles.titleSmall.copyWith(
+                            color: colors.joinGreen,
+                          ),
+                        ),
+                      ),
+                      for (final meeting in ongoing) ...[
+                        _OngoingMeetingCard(
+                          meeting: meeting,
+                          onRejoin: () => onJoinMeeting(meeting.code),
+                          onEndMeeting: meeting.amIHost
+                              ? () => onEndMeeting(meeting)
+                              : null,
+                        ),
+                        const SizedBox(height: 10),
+                      ],
+                    ],
+                    if (upcoming.isNotEmpty) ...[
+                      Padding(
+                        padding: EdgeInsets.fromLTRB(
+                          0,
+                          ongoing.isNotEmpty ? 10 : 0,
+                          0,
+                          8,
+                        ),
+                        child: Text(
+                          'Upcoming meetings',
+                          style: textStyles.titleSmall.copyWith(
+                            color: colors.onSurfaceVariant,
+                          ),
+                        ),
+                      ),
+                      for (final meeting in upcoming) ...[
+                        MeetingListCard(
+                          meeting: meeting,
+                          onJoin: () => onJoinMeeting(meeting.code),
+                        ),
+                        const SizedBox(height: 10),
+                      ],
+                    ],
+                  ],
+                ),
+              );
+            },
           ),
         ),
       ],
+    );
+  }
+}
+
+class _OngoingMeetingCard extends StatelessWidget {
+  const _OngoingMeetingCard({
+    required this.meeting,
+    required this.onRejoin,
+    this.onEndMeeting,
+  });
+
+  final OpenMeeting meeting;
+  final VoidCallback onRejoin;
+  final VoidCallback? onEndMeeting;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.colors;
+    final colorScheme = context.colorScheme;
+    final textStyles = context.textStyles;
+    final count = meeting.activeParticipantCount;
+    final countLabel = count == 1 ? '1 person in call' : '$count people in call';
+
+    return Card(
+      child: InkWell(
+        onTap: onRejoin,
+        borderRadius: BorderRadius.circular(16),
+        child: Padding(
+          padding: const EdgeInsets.all(16),
+          child: Row(
+            children: [
+              Container(
+                width: 44,
+                height: 44,
+                decoration: BoxDecoration(
+                  color: colorScheme.secondaryContainer,
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: Icon(
+                  Icons.sensors_rounded,
+                  color: colors.joinGreen,
+                ),
+              ),
+              const SizedBox(width: 14),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      meeting.title,
+                      style: textStyles.titleSmall,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      '$countLabel  •  ${meeting.code}',
+                      style: textStyles.caption,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(width: 8),
+              FilledButton.tonal(
+                onPressed: onRejoin,
+                child: const Text('Rejoin'),
+              ),
+              if (onEndMeeting != null)
+                PopupMenuButton<_OngoingMenuAction>(
+                  tooltip: 'Meeting options',
+                  onSelected: (action) {
+                    if (action == _OngoingMenuAction.endMeeting) {
+                      onEndMeeting?.call();
+                    }
+                  },
+                  itemBuilder: (context) => [
+                    PopupMenuItem<_OngoingMenuAction>(
+                      value: _OngoingMenuAction.endMeeting,
+                      child: Row(
+                        children: [
+                          Icon(
+                            Icons.call_end_rounded,
+                            size: 18,
+                            color: colors.endCallRed,
+                          ),
+                          const SizedBox(width: 10),
+                          const Text('End meeting'),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+            ],
+          ),
+        ),
+      ),
     );
   }
 }
@@ -260,7 +504,7 @@ class _CalendarTabView extends StatelessWidget {
     required this.onRefresh,
   });
 
-  final AsyncValue<List<Meeting>> meetingsAsync;
+  final AsyncValue<List<OpenMeeting>> meetingsAsync;
   final VoidCallback onSchedule;
   final ValueChanged<String> onJoinMeeting;
   final Future<void> Function() onRefresh;
@@ -293,72 +537,45 @@ class _CalendarTabView extends StatelessWidget {
           ),
         ),
         Expanded(
-          child: _MeetingsListView(
-            meetingsAsync: meetingsAsync,
-            emptyTitle: 'Your calendar is clear',
-            emptySubtitle: 'Schedule a meeting to invite participants.',
-            onJoinMeeting: onJoinMeeting,
-            onRefresh: onRefresh,
-          ),
-        ),
-      ],
-    );
-  }
-}
-
-class _MeetingsListView extends StatelessWidget {
-  const _MeetingsListView({
-    required this.meetingsAsync,
-    required this.emptyTitle,
-    required this.emptySubtitle,
-    required this.onJoinMeeting,
-    required this.onRefresh,
-  });
-
-  final AsyncValue<List<Meeting>> meetingsAsync;
-  final String emptyTitle;
-  final String emptySubtitle;
-  final ValueChanged<String> onJoinMeeting;
-  final Future<void> Function() onRefresh;
-
-  @override
-  Widget build(BuildContext context) {
-    return meetingsAsync.when(
-      loading: () => const AppLoadingIndicator(
-        message: 'Loading meetings...',
-      ),
-      error: (error, _) {
-        return AppErrorState(
-          message: ApiException.friendlyMessage(error),
-          onRetry: onRefresh,
-        );
-      },
-      data: (meetings) {
-        if (meetings.isEmpty) {
-          return AppEmptyState(
-            icon: Icons.event_available_rounded,
-            title: emptyTitle,
-            subtitle: emptySubtitle,
-            actionLabel: 'Refresh',
-            onAction: onRefresh,
-          );
-        }
-        return RefreshIndicator(
-          onRefresh: onRefresh,
-          child: ListView.separated(
-            padding: const EdgeInsets.fromLTRB(16, 4, 16, 24),
-            itemCount: meetings.length,
-            separatorBuilder: (_, _) => const SizedBox(height: 10),
-            itemBuilder: (context, index) {
-              final meeting = meetings[index];
-              return MeetingListCard(
-                meeting: meeting,
-                onJoin: () => onJoinMeeting(meeting.code),
+          child: meetingsAsync.when(
+            loading: () => const AppLoadingIndicator(
+              message: 'Loading meetings...',
+            ),
+            error: (error, _) {
+              return AppErrorState(
+                message: ApiException.friendlyMessage(error),
+                onRetry: onRefresh,
+              );
+            },
+            data: (meetings) {
+              if (meetings.isEmpty) {
+                return AppEmptyState(
+                  icon: Icons.event_available_rounded,
+                  title: 'Your calendar is clear',
+                  subtitle: 'Schedule a meeting to invite participants.',
+                  actionLabel: 'Refresh',
+                  onAction: onRefresh,
+                );
+              }
+              return RefreshIndicator(
+                onRefresh: onRefresh,
+                child: ListView.separated(
+                  padding: const EdgeInsets.fromLTRB(16, 4, 16, 24),
+                  itemCount: meetings.length,
+                  separatorBuilder: (_, _) => const SizedBox(height: 10),
+                  itemBuilder: (context, index) {
+                    final meeting = meetings[index];
+                    return MeetingListCard(
+                      meeting: meeting,
+                      onJoin: () => onJoinMeeting(meeting.code),
+                    );
+                  },
+                ),
               );
             },
           ),
-        );
-      },
+        ),
+      ],
     );
   }
 }

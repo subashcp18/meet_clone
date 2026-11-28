@@ -18,6 +18,8 @@ abstract class Meeting with _$Meeting {
     DateTime? scheduledAt,
     @Default('scheduled') String status,
     DateTime? createdAt,
+    DateTime? endedAt,
+    DateTime? lastActivityAt,
     @Default('') String hostName,
     @Default(30) int durationMinutes,
     String? notes,
@@ -28,6 +30,8 @@ abstract class Meeting with _$Meeting {
       _$MeetingFromJson(json);
 
   bool get isLive => status == 'live';
+
+  bool get isEnded => status == 'ended';
 
   DateTime get startTime => scheduledAt ?? createdAt ?? DateTime.now();
 

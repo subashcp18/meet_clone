@@ -8,6 +8,15 @@ import 'api_result.dart';
 abstract class BaseRepository {
   const BaseRepository();
 
+  static void logPostgrestException(PostgrestException error) {
+    if (kDebugMode) {
+      debugPrint(
+        'PostgrestException code=${error.code} message=${error.message} '
+        'details=${error.details} hint=${error.hint}',
+      );
+    }
+  }
+
   Future<Result<T>> guard<T>(Future<T> Function() call) async {
     try {
       final data = await call();
@@ -15,12 +24,7 @@ abstract class BaseRepository {
     } on AuthException catch (error) {
       return Failure(ApiException.fromAuthException(error));
     } on PostgrestException catch (error) {
-      if (kDebugMode) {
-        debugPrint(
-          'PostgrestException code=${error.code} message=${error.message} '
-          'details=${error.details} hint=${error.hint}',
-        );
-      }
+      logPostgrestException(error);
       return Failure(ApiException.fromPostgrestException(error));
     } on DioException catch (error) {
       final mapped = error.error;

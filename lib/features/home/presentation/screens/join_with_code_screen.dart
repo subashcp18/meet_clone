@@ -61,13 +61,13 @@ class _JoinWithCodeScreenState extends ConsumerState<JoinWithCodeScreen> {
     });
 
     try {
-      ref.invalidate(joinMeetingProvider(code));
-      final meeting = await ref.read(joinMeetingProvider(code).future);
+      ref.invalidate(meetingPreviewProvider(code));
+      final preview = await ref.read(meetingPreviewProvider(code).future);
       if (!mounted) {
         return;
       }
       setState(() => _isLoading = false);
-      context.pushReplacement(RouteNames.lobbyLocation(meeting.code));
+      context.pushReplacement(RouteNames.lobbyLocation(preview.code));
     } catch (error) {
       if (!mounted) {
         return;

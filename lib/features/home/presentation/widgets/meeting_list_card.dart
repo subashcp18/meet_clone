@@ -2,7 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../../../../core/utils/extensions.dart';
 import '../../../../core/utils/formatters.dart';
-import '../../../meeting/data/models/meeting.dart';
+import '../../../meeting/data/models/open_meeting.dart';
 
 class MeetingListCard extends StatelessWidget {
   const MeetingListCard({
@@ -11,7 +11,7 @@ class MeetingListCard extends StatelessWidget {
     required this.onJoin,
   });
 
-  final Meeting meeting;
+  final OpenMeeting meeting;
   final VoidCallback onJoin;
 
   @override

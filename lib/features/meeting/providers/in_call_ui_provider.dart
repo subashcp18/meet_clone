@@ -163,3 +163,23 @@ class SelfViewPositionController extends _$SelfViewPositionController {
     }
   }
 }
+
+@riverpod
+class PinnedParticipantController extends _$PinnedParticipantController {
+  @override
+  String? build() => null;
+
+  void pin(String userId) {
+    state = userId;
+  }
+
+  void unpin() {
+    if (state != null) {
+      state = null;
+    }
+  }
+
+  void toggle(String userId) {
+    state = state == userId ? null : userId;
+  }
+}

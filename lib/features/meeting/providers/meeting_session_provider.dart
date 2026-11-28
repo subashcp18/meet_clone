@@ -1,10 +1,15 @@
+import 'dart:async';
+
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:riverpod_annotation/riverpod_annotation.dart';
 
+import '../../auth/providers/auth_provider.dart';
+import '../../home/providers/home_provider.dart';
 import '../../settings/providers/settings_provider.dart';
 import '../data/models/meeting.dart';
 import '../data/models/meeting_participant.dart';
+import '../data/models/meeting_preview.dart';
 import '../data/repositories/meeting_repository.dart';
 import '../data/repositories/participants_repository.dart';
 
@@ -26,6 +31,8 @@ class MeetingSessionState {
     this.meetingId = '',
     this.code = '',
     this.title = '',
+    this.hostId = '',
+    this.isHost = false,
     this.isMicOn = true,
     this.isCameraOn = true,
     this.isFrontCamera = true,
@@ -35,11 +42,14 @@ class MeetingSessionState {
     this.isJoining = false,
     this.errorMessage,
     this.participants = const <MeetingParticipant>[],
+    this.waitingRequests = const <MeetingParticipant>[],
   });
 
   final String meetingId;
   final String code;
   final String title;
+  final String hostId;
+  final bool isHost;
   final bool isMicOn;
   final bool isCameraOn;
   final bool isFrontCamera;
@@ -49,11 +59,16 @@ class MeetingSessionState {
   final bool isJoining;
   final String? errorMessage;
   final List<MeetingParticipant> participants;
+  final List<MeetingParticipant> waitingRequests;
+
+  bool get hasOtherAdmitted => participants.any((p) => !p.isSelf);
 
   MeetingSessionState copyWith({
     String? meetingId,
     String? code,
     String? title,
+    String? hostId,
+    bool? isHost,
     bool? isMicOn,
     bool? isCameraOn,
     bool? isFrontCamera,
@@ -63,11 +78,14 @@ class MeetingSessionState {
     bool? isJoining,
     String? errorMessage,
     List<MeetingParticipant>? participants,
+    List<MeetingParticipant>? waitingRequests,
   }) {
     return MeetingSessionState(
       meetingId: meetingId ?? this.meetingId,
       code: code ?? this.code,
       title: title ?? this.title,
+      hostId: hostId ?? this.hostId,
+      isHost: isHost ?? this.isHost,
       isMicOn: isMicOn ?? this.isMicOn,
       isCameraOn: isCameraOn ?? this.isCameraOn,
       isFrontCamera: isFrontCamera ?? this.isFrontCamera,
@@ -77,15 +95,16 @@ class MeetingSessionState {
       isJoining: isJoining ?? this.isJoining,
       errorMessage: errorMessage,
       participants: participants ?? this.participants,
+      waitingRequests: waitingRequests ?? this.waitingRequests,
     );
   }
 }
 
 @riverpod
-Future<Meeting> joinMeeting(Ref ref, String code) async {
-  final result = await ref.read(meetingRepositoryProvider).joinByCode(code);
+Future<MeetingPreview> meetingPreview(Ref ref, String code) async {
+  final result = await ref.read(meetingRepositoryProvider).getPreview(code);
   return result.when(
-    success: (meeting) => meeting,
+    success: (preview) => preview,
     failure: (exception) => throw exception,
   );
 }
@@ -98,22 +117,55 @@ Stream<List<MeetingParticipant>> meetingParticipants(
   return ref.watch(participantsRepositoryProvider).watchParticipants(meetingId);
 }
 
+@riverpod
+Stream<List<MeetingParticipant>> waitingRequests(
+  Ref ref,
+  String meetingId,
+) {
+  return ref
+      .watch(participantsRepositoryProvider)
+      .watchWaitingRequests(meetingId);
+}
+
+@riverpod
+Stream<MeetingParticipant?> myParticipantRow(
+  Ref ref,
+  String meetingId,
+) {
+  return ref
+      .watch(participantsRepositoryProvider)
+      .watchMyParticipantRow(meetingId);
+}
+
+@riverpod
+Stream<Meeting?> meetingStatus(
+  Ref ref,
+  String meetingId,
+) {
+  return ref.watch(participantsRepositoryProvider).watchMeeting(meetingId);
+}
+
 @Riverpod(keepAlive: true)
 class MeetingSessionNotifier extends _$MeetingSessionNotifier {
-  // region: SUBSCRIPTION & BUILD
+  // region: SUBSCRIPTIONS & BUILD
   ProviderSubscription<AsyncValue<List<MeetingParticipant>>>? _participantsSub;
+  ProviderSubscription<AsyncValue<List<MeetingParticipant>>>? _waitingSub;
 
   @override
   MeetingSessionState build() {
-    ref.onDispose(() {
-      _participantsSub?.close();
-      _participantsSub = null;
-    });
+    ref.onDispose(_closeSubscriptions);
     final defaults = ref.read(settingsProvider);
     return MeetingSessionState(
       isMicOn: defaults.defaultMicOn,
       isCameraOn: defaults.defaultCameraOn,
     );
+  }
+
+  void _closeSubscriptions() {
+    _participantsSub?.close();
+    _participantsSub = null;
+    _waitingSub?.close();
+    _waitingSub = null;
   }
   // endregion
 
@@ -127,6 +179,18 @@ class MeetingSessionNotifier extends _$MeetingSessionNotifier {
       ),
     );
     _syncMyState(isMuted: !nextMic);
+  }
+
+  void applyRemoteMute() {
+    if (!state.isMicOn) {
+      return;
+    }
+    state = state.copyWith(
+      isMicOn: false,
+      participants: _updateSelf(
+        (self) => self.copyWith(isMuted: true),
+      ),
+    );
   }
 
   void toggleCamera() {
@@ -208,43 +272,82 @@ class MeetingSessionNotifier extends _$MeetingSessionNotifier {
   }
   // endregion
 
-  // region: PARTICIPANT MODERATION
-  Future<void> muteParticipant(String participantId) async {
-    final target = state.participants
-        .where((p) => p.id == participantId)
-        .firstOrNull;
-    if (target == null) {
-      return;
+  // region: ADMISSION & HOST MODERATION
+  Future<String?> admitParticipant(String userId) async {
+    if (state.meetingId.isEmpty) {
+      return null;
     }
-    if (target.isSelf) {
-      if (state.isMicOn) {
-        toggleMic();
-      }
-      return;
-    }
-    state = state.copyWith(
-      participants: state.participants
-          .map(
-            (p) => p.id == participantId
-                ? p.copyWith(isMuted: true, isSpeaking: false)
-                : p,
-          )
-          .toList(),
+    final result = await ref
+        .read(participantsRepositoryProvider)
+        .admit(state.meetingId, userId);
+    return result.when(
+      success: (_) => null,
+      failure: (exception) => exception.message,
     );
   }
 
-  Future<void> removeParticipant(String participantId) async {
-    state = state.copyWith(
-      participants: state.participants
-          .where((p) => p.id != participantId || p.isSelf)
-          .toList(),
+  Future<String?> denyParticipant(String userId) async {
+    if (state.meetingId.isEmpty) {
+      return null;
+    }
+    final result = await ref
+        .read(participantsRepositoryProvider)
+        .deny(state.meetingId, userId);
+    return result.when(
+      success: (_) => null,
+      failure: (exception) => exception.message,
+    );
+  }
+
+  Future<String?> admitAllWaiting() async {
+    if (state.meetingId.isEmpty) {
+      return null;
+    }
+    final result = await ref
+        .read(participantsRepositoryProvider)
+        .admitAll(state.meetingId);
+    return result.when(
+      success: (_) => null,
+      failure: (exception) => exception.message,
+    );
+  }
+
+  Future<String?> hostMuteParticipant(String userId) async {
+    if (state.meetingId.isEmpty) {
+      return null;
+    }
+    final result = await ref
+        .read(participantsRepositoryProvider)
+        .hostMute(state.meetingId, userId);
+    return result.when(
+      success: (_) => null,
+      failure: (exception) => exception.message,
+    );
+  }
+
+  Future<String?> removeParticipantFromMeeting(String userId) async {
+    if (state.meetingId.isEmpty) {
+      return null;
+    }
+    final result = await ref
+        .read(participantsRepositoryProvider)
+        .removeParticipant(state.meetingId, userId);
+    return result.when(
+      success: (_) => null,
+      failure: (exception) => exception.message,
     );
   }
   // endregion
 
   // region: SESSION LIFECYCLE
-  void _subscribeParticipants(String meetingId) {
-    _participantsSub?.close();
+  void clearJoinError() {
+    if (state.errorMessage != null || state.isJoining) {
+      state = state.copyWith(isJoining: false, errorMessage: null);
+    }
+  }
+
+  void _subscribeCallStreams(String meetingId, {required bool isHost}) {
+    _closeSubscriptions();
     _participantsSub = ref.listen<AsyncValue<List<MeetingParticipant>>>(
       meetingParticipantsProvider(meetingId),
       (_, next) {
@@ -261,9 +364,22 @@ class MeetingSessionNotifier extends _$MeetingSessionNotifier {
       },
       fireImmediately: true,
     );
+
+    if (isHost) {
+      _waitingSub = ref.listen<AsyncValue<List<MeetingParticipant>>>(
+        waitingRequestsProvider(meetingId),
+        (_, next) {
+          final waiting = next.asData?.value;
+          if (waiting != null) {
+            state = state.copyWith(waitingRequests: waiting);
+          }
+        },
+        fireImmediately: true,
+      );
+    }
   }
 
-  Future<bool> joinMeeting({
+  Future<String?> requestJoin({
     required String code,
     required String title,
   }) async {
@@ -274,36 +390,51 @@ class MeetingSessionNotifier extends _$MeetingSessionNotifier {
       errorMessage: null,
     );
 
-    final result = await ref.read(meetingRepositoryProvider).joinByCode(code);
+    final result = await ref.read(meetingRepositoryProvider).requestJoin(code);
 
     return result.when(
-      success: (meeting) async {
-        final initialParticipants = meeting.participants;
+      success: (joinResult) async {
+        final meeting = joinResult.meeting;
+        final currentUid = ref.read(authControllerProvider).asData?.value?.id;
+        final isHost = currentUid != null && meeting.hostId == currentUid;
+
         state = state.copyWith(
           meetingId: meeting.id,
           code: meeting.code,
           title: meeting.title.isNotEmpty ? meeting.title : title,
+          hostId: meeting.hostId,
+          isHost: isHost,
           isJoining: false,
-          participants: initialParticipants,
+          participants: meeting.participants,
+          waitingRequests: const <MeetingParticipant>[],
         );
-        _subscribeParticipants(meeting.id);
-        await ref
-            .read(participantsRepositoryProvider)
-            .updateMyState(
-              meeting.id,
-              isMuted: !state.isMicOn,
-              isCameraOff: !state.isCameraOn,
-              handRaised: state.isHandRaised,
-            );
-        return true;
+
+        if (joinResult.isAdmitted) {
+          await activateAdmittedCall(meeting.id, isHost: isHost);
+        }
+
+        return joinResult.participantStatus;
       },
       failure: (exception) {
         state = state.copyWith(
           isJoining: false,
           errorMessage: exception.message,
         );
-        return false;
+        return null;
       },
+    );
+  }
+
+  Future<void> activateAdmittedCall(
+    String meetingId, {
+    bool? isHost,
+  }) async {
+    final resolvedHost = isHost ?? state.isHost;
+    _subscribeCallStreams(meetingId, isHost: resolvedHost);
+    await _syncMyState(
+      isMuted: !state.isMicOn,
+      isCameraOff: !state.isCameraOn,
+      handRaised: state.isHandRaised,
     );
   }
 
@@ -311,32 +442,63 @@ class MeetingSessionNotifier extends _$MeetingSessionNotifier {
     if (state.code == code && state.participants.isNotEmpty) {
       return;
     }
-    await joinMeeting(code: code, title: 'Meeting ($code)');
+    await requestJoin(code: code, title: 'Meeting ($code)');
+  }
+
+  Future<void> sendHeartbeat() async {
+    final meetingId = state.meetingId;
+    if (meetingId.isEmpty) {
+      return;
+    }
+    await ref.read(participantsRepositoryProvider).heartbeat(meetingId);
+  }
+
+  Future<void> cancelJoinRequest() async {
+    final meetingId = state.meetingId;
+    if (meetingId.isNotEmpty) {
+      await ref.read(meetingRepositoryProvider).cancelJoinRequest(meetingId);
+    }
+    _resetSessionState();
   }
 
   Future<void> leaveCall() async {
-    _participantsSub?.close();
-    _participantsSub = null;
-    final activeId = state.meetingId.isNotEmpty ? state.meetingId : state.code;
+    _closeSubscriptions();
+    final activeId = state.meetingId;
     if (activeId.isNotEmpty) {
       await ref.read(meetingRepositoryProvider).leaveMeeting(activeId);
     }
-    final defaults = ref.read(settingsProvider);
-    state = MeetingSessionState(
-      isMicOn: defaults.defaultMicOn,
-      isCameraOn: defaults.defaultCameraOn,
-      isFrontCamera: state.isFrontCamera,
-      audioOutput: state.audioOutput,
-    );
+    _resetSessionState();
+    ref.invalidate(upcomingMeetingsProvider);
   }
 
   Future<void> endCall() async {
-    _participantsSub?.close();
-    _participantsSub = null;
-    final activeId = state.meetingId.isNotEmpty ? state.meetingId : state.code;
+    _closeSubscriptions();
+    final activeId = state.meetingId;
     if (activeId.isNotEmpty) {
       await ref.read(meetingRepositoryProvider).endMeeting(activeId);
     }
+    _resetSessionState();
+    ref.invalidate(upcomingMeetingsProvider);
+  }
+
+  void clearAfterRemoteEnd() {
+    _closeSubscriptions();
+    _resetSessionState();
+    ref.invalidate(upcomingMeetingsProvider);
+  }
+
+  void leaveSilentlyIfActive(String meetingId) {
+    _closeSubscriptions();
+    if (meetingId.isEmpty) {
+      return;
+    }
+    Future<void>.microtask(() async {
+      await ref.read(meetingRepositoryProvider).leaveMeeting(meetingId);
+      ref.invalidate(upcomingMeetingsProvider);
+    });
+  }
+
+  void _resetSessionState() {
     final defaults = ref.read(settingsProvider);
     state = MeetingSessionState(
       isMicOn: defaults.defaultMicOn,

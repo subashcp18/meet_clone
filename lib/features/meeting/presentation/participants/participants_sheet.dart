@@ -55,16 +55,96 @@ class _ParticipantsSheetState extends ConsumerState<ParticipantsSheet> {
       );
   }
 
-  Future<void> _handleAction(
+  Future<void> _admit(String userId) async {
+    final error = await ref
+        .read(meetingSessionProvider.notifier)
+        .admitParticipant(userId);
+    if (!mounted || error == null) {
+      return;
+    }
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(SnackBar(content: Text(error)));
+  }
+
+  Future<void> _deny(String userId) async {
+    final error = await ref
+        .read(meetingSessionProvider.notifier)
+        .denyParticipant(userId);
+    if (!mounted || error == null) {
+      return;
+    }
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(SnackBar(content: Text(error)));
+  }
+
+  Future<void> _admitAll() async {
+    final error = await ref
+        .read(meetingSessionProvider.notifier)
+        .admitAllWaiting();
+    if (!mounted || error == null) {
+      return;
+    }
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(SnackBar(content: Text(error)));
+  }
+
+  Future<void> _handleHostAction(
     MeetingParticipant participant,
     _ParticipantMenuAction action,
   ) async {
-    final notifier = ref.read(meetingSessionProvider.notifier);
     switch (action) {
       case _ParticipantMenuAction.mute:
-        await notifier.muteParticipant(participant.id);
+        final error = await ref
+            .read(meetingSessionProvider.notifier)
+            .hostMuteParticipant(participant.userId);
+        if (!mounted || error == null) {
+          return;
+        }
+        ScaffoldMessenger.of(context)
+          ..hideCurrentSnackBar()
+          ..showSnackBar(SnackBar(content: Text(error)));
       case _ParticipantMenuAction.remove:
-        await notifier.removeParticipant(participant.id);
+        final confirmed = await showDialog<bool>(
+          context: context,
+          builder: (dialogContext) => Theme(
+            data: AppTheme.callTheme,
+            child: AlertDialog(
+              title: Text('Remove ${participant.name}?'),
+              content: const Text(
+                'They will be removed from the meeting.',
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.of(dialogContext).pop(false),
+                  child: const Text('Cancel'),
+                ),
+                ElevatedButton(
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: dialogContext.colors.endCallRed,
+                    foregroundColor: dialogContext.colorScheme.onError,
+                  ),
+                  onPressed: () => Navigator.of(dialogContext).pop(true),
+                  child: const Text('Remove'),
+                ),
+              ],
+            ),
+          ),
+        );
+        if (confirmed != true || !mounted) {
+          return;
+        }
+        final error = await ref
+            .read(meetingSessionProvider.notifier)
+            .removeParticipantFromMeeting(participant.userId);
+        if (!mounted || error == null) {
+          return;
+        }
+        ScaffoldMessenger.of(context)
+          ..hideCurrentSnackBar()
+          ..showSnackBar(SnackBar(content: Text(error)));
     }
   }
   // endregion
@@ -85,13 +165,16 @@ class _ParticipantsSheetState extends ConsumerState<ParticipantsSheet> {
           participant.email.toLowerCase().contains(q);
     }).toList();
 
+    final waiting = session.isHost
+        ? session.waitingRequests
+        : const <MeetingParticipant>[];
     final raisedHandsCount = session.participants
         .where((p) => p.isHandRaised)
         .length;
 
     return DraggableScrollableSheet(
       expand: false,
-      initialChildSize: 0.7,
+      initialChildSize: 0.72,
       minChildSize: 0.45,
       maxChildSize: 0.92,
       builder: (context, scrollController) {
@@ -117,6 +200,68 @@ class _ParticipantsSheetState extends ConsumerState<ParticipantsSheet> {
                   ],
                 ),
               ),
+              if (waiting.isNotEmpty)
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 4, 16, 12),
+                  child: Container(
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: colors.callControlSurface,
+                      borderRadius: BorderRadius.circular(14),
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        Row(
+                          children: [
+                            Expanded(
+                              child: Text(
+                                'Waiting to join (${waiting.length})',
+                                style: textStyles.titleSmall,
+                              ),
+                            ),
+                            if (waiting.length > 1)
+                              TextButton(
+                                onPressed: _admitAll,
+                                child: const Text('Admit all'),
+                              ),
+                          ],
+                        ),
+                        const SizedBox(height: 6),
+                        for (final person in waiting)
+                          Padding(
+                            padding: const EdgeInsets.symmetric(vertical: 4),
+                            child: Row(
+                              children: [
+                                AppUserAvatar(
+                                  nameOrEmail: person.name,
+                                  radius: 16,
+                                ),
+                                const SizedBox(width: 10),
+                                Expanded(
+                                  child: Text(
+                                    person.name,
+                                    style: textStyles.bodyMedium,
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                  ),
+                                ),
+                                TextButton(
+                                  onPressed: () => _deny(person.userId),
+                                  child: const Text('Deny'),
+                                ),
+                                const SizedBox(width: 4),
+                                FilledButton(
+                                  onPressed: () => _admit(person.userId),
+                                  child: const Text('Admit'),
+                                ),
+                              ],
+                            ),
+                          ),
+                      ],
+                    ),
+                  ),
+                ),
               Padding(
                 padding: const EdgeInsets.symmetric(horizontal: 16),
                 child: TextField(
@@ -192,10 +337,15 @@ class _ParticipantsSheetState extends ConsumerState<ParticipantsSheet> {
                         separatorBuilder: (_, _) => const SizedBox(height: 4),
                         itemBuilder: (context, index) {
                           final participant = filtered[index];
+                          final showHostMenu =
+                              session.isHost && !participant.isSelf;
                           return _ParticipantRow(
                             participant: participant,
-                            onSelected: (action) =>
-                                _handleAction(participant, action),
+                            showHostMenu: showHostMenu,
+                            onSelected: showHostMenu
+                                ? (action) =>
+                                      _handleHostAction(participant, action)
+                                : null,
                           );
                         },
                       ),
@@ -212,11 +362,13 @@ class _ParticipantsSheetState extends ConsumerState<ParticipantsSheet> {
 class _ParticipantRow extends StatelessWidget {
   const _ParticipantRow({
     required this.participant,
-    required this.onSelected,
+    required this.showHostMenu,
+    this.onSelected,
   });
 
   final MeetingParticipant participant;
-  final ValueChanged<_ParticipantMenuAction> onSelected;
+  final bool showHostMenu;
+  final ValueChanged<_ParticipantMenuAction>? onSelected;
 
   @override
   Widget build(BuildContext context) {
@@ -270,29 +422,33 @@ class _ParticipantRow extends StatelessWidget {
                 ? colors.primary
                 : colors.onSurfaceVariant,
           ),
-          if (!participant.isSelf)
+          if (showHostMenu && onSelected != null)
             PopupMenuButton<_ParticipantMenuAction>(
               tooltip: 'Participant actions',
               onSelected: onSelected,
               itemBuilder: (context) => [
-                if (!participant.isMuted)
-                  const PopupMenuItem<_ParticipantMenuAction>(
-                    value: _ParticipantMenuAction.mute,
-                    child: Row(
-                      children: [
-                        Icon(Icons.mic_off_rounded, size: 18),
-                        SizedBox(width: 10),
-                        Text('Mute'),
-                      ],
-                    ),
+                PopupMenuItem<_ParticipantMenuAction>(
+                  value: _ParticipantMenuAction.mute,
+                  enabled: !participant.isMuted,
+                  child: Row(
+                    children: [
+                      const Icon(Icons.mic_off_rounded, size: 18),
+                      const SizedBox(width: 10),
+                      Text(participant.isMuted ? 'Muted' : 'Mute'),
+                    ],
                   ),
-                const PopupMenuItem<_ParticipantMenuAction>(
+                ),
+                PopupMenuItem<_ParticipantMenuAction>(
                   value: _ParticipantMenuAction.remove,
                   child: Row(
                     children: [
-                      Icon(Icons.person_remove_outlined, size: 18),
-                      SizedBox(width: 10),
-                      Text('Remove from call'),
+                      Icon(
+                        Icons.person_remove_outlined,
+                        size: 18,
+                        color: colors.endCallRed,
+                      ),
+                      const SizedBox(width: 10),
+                      const Text('Remove from meeting'),
                     ],
                   ),
                 ),

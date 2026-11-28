@@ -4,17 +4,29 @@ import '../../../../../core/utils/extensions.dart';
 import '../../../../../core/widgets/app_user_avatar.dart';
 import '../../../data/models/meeting_participant.dart';
 
+enum _TileMenuAction { togglePin }
+
 class ParticipantVideoTile extends StatelessWidget {
   const ParticipantVideoTile({
     super.key,
     required this.participant,
     this.isCompact = false,
+    this.isPinned = false,
+    this.showMenuButton = false,
     this.onTap,
+    this.onTogglePin,
+    this.onMenuOpened,
+    this.onMenuClosed,
   });
 
   final MeetingParticipant participant;
   final bool isCompact;
+  final bool isPinned;
+  final bool showMenuButton;
   final VoidCallback? onTap;
+  final VoidCallback? onTogglePin;
+  final VoidCallback? onMenuOpened;
+  final VoidCallback? onMenuClosed;
 
   @override
   Widget build(BuildContext context) {
@@ -68,21 +80,30 @@ class ParticipantVideoTile extends StatelessWidget {
               ),
             ),
           ),
+          if (isPinned)
+            Positioned(
+              top: 8,
+              left: 8,
+              child: _TileBadge(
+                icon: Icons.push_pin_rounded,
+                backgroundColor: colors.primary,
+                iconColor: colorScheme.onPrimary,
+              ),
+            ),
           Positioned(
             top: 8,
             right: 8,
             child: Row(
               mainAxisSize: MainAxisSize.min,
               children: [
-                if (participant.isHandRaised)
+                if (participant.isHandRaised) ...[
                   _TileBadge(
                     icon: Icons.back_hand_rounded,
                     backgroundColor: colors.warningAmber,
                     iconColor: colorScheme.onSecondary,
                   ),
-                if (participant.isHandRaised &&
-                    (participant.isMuted || participant.isSpeaking))
                   const SizedBox(width: 6),
+                ],
                 if (participant.isMuted)
                   _TileBadge(
                     icon: Icons.mic_off_rounded,
@@ -96,6 +117,51 @@ class ParticipantVideoTile extends StatelessWidget {
                     backgroundColor: colors.primary,
                     iconColor: colorScheme.onPrimary,
                   ),
+                if (showMenuButton && onTogglePin != null) ...[
+                  const SizedBox(width: 4),
+                  Material(
+                    color: colors.callBackground.withValues(alpha: 0.65),
+                    shape: const CircleBorder(),
+                    child: PopupMenuButton<_TileMenuAction>(
+                      tooltip: 'Tile options',
+                      padding: EdgeInsets.zero,
+                      constraints: const BoxConstraints(
+                        minWidth: 28,
+                        minHeight: 28,
+                      ),
+                      icon: Icon(
+                        Icons.more_vert_rounded,
+                        size: 16,
+                        color: colors.onSurface,
+                      ),
+                      onOpened: onMenuOpened,
+                      onCanceled: onMenuClosed,
+                      onSelected: (action) {
+                        onMenuClosed?.call();
+                        if (action == _TileMenuAction.togglePin) {
+                          onTogglePin?.call();
+                        }
+                      },
+                      itemBuilder: (context) => [
+                        PopupMenuItem<_TileMenuAction>(
+                          value: _TileMenuAction.togglePin,
+                          child: Row(
+                            children: [
+                              Icon(
+                                isPinned
+                                    ? Icons.push_pin_outlined
+                                    : Icons.push_pin_rounded,
+                                size: 18,
+                              ),
+                              const SizedBox(width: 10),
+                              Text(isPinned ? 'Unpin' : 'Pin'),
+                            ],
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
               ],
             ),
           ),

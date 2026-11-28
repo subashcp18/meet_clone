@@ -1,6 +1,7 @@
 import 'package:riverpod_annotation/riverpod_annotation.dart';
 
-import '../../meeting/data/models/meeting.dart';
+import '../../auth/providers/auth_provider.dart';
+import '../../meeting/data/models/open_meeting.dart';
 import '../../meeting/data/repositories/meeting_repository.dart';
 
 part 'home_provider.g.dart';
@@ -21,7 +22,11 @@ class HomeTabNotifier extends _$HomeTabNotifier {
 class UpcomingMeetingsNotifier extends _$UpcomingMeetingsNotifier {
   // region: BUILD
   @override
-  Future<List<Meeting>> build() async {
+  Future<List<OpenMeeting>> build() async {
+    final userId = ref.watch(authControllerProvider).asData?.value?.id;
+    if (userId == null) {
+      return const <OpenMeeting>[];
+    }
     return _fetchMeetings();
   }
   // endregion
@@ -32,15 +37,8 @@ class UpcomingMeetingsNotifier extends _$UpcomingMeetingsNotifier {
     state = await AsyncValue.guard(_fetchMeetings);
   }
 
-  void addMeeting(Meeting meeting) {
-    final current = state.asData?.value ?? const <Meeting>[];
-    final updated = [...current, meeting]
-      ..sort((a, b) => a.startTime.compareTo(b.startTime));
-    state = AsyncData(updated);
-  }
-
-  Future<List<Meeting>> _fetchMeetings() async {
-    final result = await ref.read(meetingRepositoryProvider).listUpcoming();
+  Future<List<OpenMeeting>> _fetchMeetings() async {
+    final result = await ref.read(meetingRepositoryProvider).listOpenMeetings();
     return result.when(
       success: (meetings) => meetings,
       failure: (exception) => throw exception,
